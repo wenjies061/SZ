@@ -1,0 +1,35 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.yllite.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.yllite.app"
+        minSdk 24
+        targetSdk 34
+        versionCode 6
+        versionName "3.2.1"
+        multiDexEnabled true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // ML Kit 涓枃鏂囧瓧璇嗗埆(绂荤嚎鍐呯疆妯″瀷): H5/鑷粯寮圭獥鐨?OCR 璇嗗埆
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+}
+
+// 闆跺閮ㄤ緷璧? 绾?android.app.Activity + WebView, 涓嶄娇鐢?AndroidX

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v3.0.0: 不限定 packageNames(接收全部事件), 运行时由 YlAccessibilityService + BotCore.isTargetPackage
+     只对抖音/抖音极速版(com.ss.android.ugc.aweme / .lite)的前台窗口行动 -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
+    android:canPerformGestures="true"
+    android:canTakeScreenshot="true"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="120"
+    android:description="@string/yl_service_desc" />

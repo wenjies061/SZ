@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="yl_service_desc">SZ 抢福袋服务:仅在抖音/抖音极速版前台时检测福袋节点并辅助点击,由用户手动启停,可在系统无障碍设置中随时关闭。</string>
+</resources>

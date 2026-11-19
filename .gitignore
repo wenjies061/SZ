@@ -1,0 +1,8 @@
+﻿.gradle/
+app/build/
+build/
+local.properties
+*.iml
+.idea/
+dist/*.apk
+!dist/SZ-v3.2.1-debug.apk
