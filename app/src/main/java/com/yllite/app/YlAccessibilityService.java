@@ -1,9 +1,13 @@
 package com.yllite.app;
 
 import android.accessibilityservice.AccessibilityService;
+import android.graphics.Bitmap;
 import android.graphics.Rect;
+import android.os.SystemClock;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+
+import java.util.List;
 
 /**
  * YL-Lite 真实抖音抢福袋服务(v3.0.0)。
@@ -35,6 +39,12 @@ public class YlAccessibilityService extends AccessibilityService {
     private volatile long scanStartTs = 0;
     private volatile long scanHangLoggedTs = 0;
     private int ticks = 0;
+    private final RoomRecovery roomRecovery = new RoomRecovery();
+    private int historyWindow = -1;
+    private long historyProbedAt;
+    private LiveWatchHistory historyPage;
+    private volatile long historyScrollAt;
+    private volatile long navigationCheckSession = -1;
     private final Runnable watchTask = new Runnable() {
         @Override public void run() {
             BotCore bot = BotCore.get();
@@ -91,6 +101,11 @@ public class YlAccessibilityService extends AccessibilityService {
         String pkg = pkgCs == null ? "" : pkgCs.toString();
         if (!pkg.isEmpty()) fgPkg = pkg;
         if (!BotCore.isTargetPackage(pkg, bot.cfg)) return;
+
+        if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
+            historyScrollAt = SystemClock.elapsedRealtime();
+            return;
+        }
 
         if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             CharSequence cn = event.getClassName();
@@ -200,11 +215,12 @@ public class YlAccessibilityService extends AccessibilityService {
                 String a = i.getAction() == null ? "" : i.getAction();
                 switch (a) {
                     case "com.yllite.app.START":
-                        bot.running = true;
-                        bot.log("[bot] adb: 启动真机模式");
+                        bot.setRunning(true);
+                        navigationCheckSession = i.getBooleanExtra("navigation_only", false) ? bot.runSession() : -1;
+                        bot.log(navigationCheckSession == -1 ? "[bot] adb: 启动真机模式" : "[bot] adb: 仅验证直播间导航");
                         break;
                     case "com.yllite.app.STOP":
-                        bot.running = false;
+                        bot.setRunning(false);
                         bot.log("[bot] adb: 停止真机模式");
                         break;
                     case "com.yllite.app.DUMP_ON":
@@ -233,6 +249,13 @@ public class YlAccessibilityService extends AccessibilityService {
 
     private void scan() {
         BotCore bot = BotCore.get();
+        long session = bot.runSession();
+        long now = SystemClock.elapsedRealtime();
+        roomRecovery.begin(session, now);
+        List<AccessibilityNodeInfo> roots = targetRoots(bot);
+        if (roots.isEmpty()) return;
+        AccessibilityNodeInfo top = roots.get(0);
+        if (handleWatchHistory(bot, top, session, now)) return;
 
         String room0 = (currentHost != null && !currentHost.isEmpty()) ? currentHost : currentRoom;
         if (room0 == null || room0.isEmpty()) room0 = "douyin";
@@ -241,30 +264,71 @@ public class YlAccessibilityService extends AccessibilityService {
         boolean inLiveContext = currentRoom != null
                 && currentRoom.toLowerCase(java.util.Locale.ROOT).contains("live");
 
-        for (AccessibilityNodeInfo root : targetRoots(bot)) {
-            scanRoot(bot, root, room, inLiveContext);
+        for (AccessibilityNodeInfo root : roots) {
+            scanRoot(bot, root, room, inLiveContext, root == top, session);
         }
     }
 
-    private void scanRoot(BotCore bot, AccessibilityNodeInfo root, String room, boolean inLiveContext) {
-        if (groupPanelPending(System.currentTimeMillis())) {
-            maybeOcrH5Dialog(room, false, 0);
+    private boolean handleWatchHistory(BotCore bot, AccessibilityNodeInfo root, long session, long now) {
+        int window = root.getWindowId();
+        if (window != historyWindow || now - historyProbedAt >= 900) {
+            historyWindow = window;
+            historyProbedAt = now;
+            historyPage = LiveWatchHistory.find(root);
+        }
+        LiveWatchHistory page = historyPage;
+        if (page == null || !isTargetActive(bot, window)) return false;
+        String pkg = root.getPackageName().toString();
+        String wanted = roomRecovery.wantedHost(session, pkg, now);
+        if (wanted == null) return true;
+
+        long scroll = historyScrollAt;
+        readScreenshot(2400, (image, done) -> OcrHelper.recognize(image, getMainExecutor(), items -> {
+            try {
+                if (bot.runSession() != session || historyScrollAt != scroll || !isTargetActive(bot, window)
+                        || !page.hasTitle(items)) return;
+                LiveWatchHistory.Candidate candidate = page.choose(image, items, wanted);
+                if (candidate == null) {
+                    if (bot.canAct("historynoentry", 10000)) {
+                        bot.log("[room] 观看记录里暂未确认可返回的直播间");
+                    }
+                    return;
+                }
+                if (roomRecovery.reserve(session, pkg, wanted, SystemClock.elapsedRealtime())
+                        && gestureTap(candidate.x, candidate.y)) {
+                    bot.log(wanted.isEmpty() ? "[room] 已点击观看记录第一条直播，等待进房"
+                            : "[room] 已点击观看记录中的「" + wanted + "」，等待进房");
+                }
+            } finally {
+                done.run();
+            }
+        }));
+        return true;
+    }
+
+    private void scanRoot(BotCore bot, AccessibilityNodeInfo root, String room, boolean inLiveContext,
+                          boolean topRoot, long session) {
+        final int window = root.getWindowId();
+        boolean navigationCheck = navigationCheckSession == session;
+        if (!navigationCheck && groupPanelPending(System.currentTimeMillis())) {
+            maybeOcrH5Dialog(room, false, false, window, 0);
             return;
         }
         boolean popupSeen = false;
         boolean anchorSeen = false;
         boolean fudaiSeen = false;
-        boolean h5Backdrop = false;
+        AccessibilityNodeInfo h5Backdrop = null;
         boolean fudaiPanelSeen = false;
         java.util.List<android.graphics.Rect> blockedRects = new java.util.ArrayList<>();
         AccessibilityNodeInfo sendNode = null;
         AccessibilityNodeInfo closeNode = null;
+        AccessibilityNodeInfo couponCanvas = null;
         AccessibilityNodeInfo groupEntry = null;
         AccessibilityNodeInfo regularEntry = null;
         String regularLabel = null;
+        String hostOnScreen = "";
         android.graphics.Rect screenR = new android.graphics.Rect();
         root.getBoundsInScreen(screenR);
-        final int scrW = Math.max(1, screenR.width());
         final int scrH = Math.max(1, screenR.height());
         java.util.ArrayDeque<AccessibilityNodeInfo> queue = new java.util.ArrayDeque<>();
         queue.add(root);
@@ -286,11 +350,16 @@ public class YlAccessibilityService extends AccessibilityService {
             CharSequence desc = n.getContentDescription();
             String viewId = n.getViewIdResourceName();
             boolean isButton = n.getClassName() != null && n.getClassName().toString().contains("Button");
+            if (isCouponCanvas(n, screenR)) couponCanvas = n;
 
             // 主播名 => 直播间身份(同房上限按主播名计, 换房自动归零)
-            if (viewId != null && viewId.endsWith(":id/user_name")
+            if (viewId != null && viewId.endsWith(":id/user_name") && n.isVisibleToUser()
                     && text != null && text.length() > 0) {
-                currentHost = text.toString().trim();
+                Rect hostBounds = new Rect();
+                n.getBoundsInScreen(hostBounds);
+                if (!hostBounds.isEmpty() && hostBounds.centerY() < screenR.top + scrH * .25f) {
+                    hostOnScreen = text.toString().trim();
+                }
             }
 
             if (GroupBuyPanel.ENTRY.contentEquals(desc == null ? "" : desc) && n.isVisibleToUser()) {
@@ -299,12 +368,7 @@ public class YlAccessibilityService extends AccessibilityService {
                 continue;
             }
 
-            // H5/自绘弹窗探测: 全屏可点击背景层 desc="关闭"(弹窗内容无障碍不可见)
-            if (desc != null && "关闭".contentEquals(desc) && n.isClickable()) {
-                android.graphics.Rect hb = new android.graphics.Rect();
-                n.getBoundsInScreen(hb);
-                if (hb.width() >= scrW * 0.85f && hb.height() >= scrH * 0.85f) h5Backdrop = true;
-            }
+            if (isBackdrop(n, screenR)) h5Backdrop = n;
 
             // 商品页逃逸已停用: tv_title 商品卡在正常直播间(电商直播)也存在, 同轮扫描先遇到它就误判
             // => back() 会直接退出直播间(表现为"反复跳出直播间")。商品页误入改为用户手动返回, 这里只记录。
@@ -317,6 +381,7 @@ public class YlAccessibilityService extends AccessibilityService {
 
             CharSequence label = (text != null && text.length() > 0) ? text : desc;
             BotCore.Kind kind = BotCore.classify(label);
+            if (navigationCheck && kind != BotCore.Kind.IN_ROOM) continue;
 
             // 普通福袋面板标记(原生节点): 标题"福袋"/参与条件/发送评论/去发表评论
             if (label != null) {
@@ -330,8 +395,7 @@ public class YlAccessibilityService extends AccessibilityService {
                 }
                 // 房间左上角出现非目标图标(红包/券): 把其矩形加入屏蔽表, 结构识别只避开这些区域
                 // (同排其他空白图标仍可能是福袋, 不能整排禁用)
-                if (lv.equals("红包") || lv.contains("电商优惠券") || lv.contains("双11消费券")
-                        || lv.contains("优惠券")) {
+                if (lv.equals("红包") || lv.contains("消费券") || lv.contains("优惠券")) {
                     android.graphics.Rect br = new android.graphics.Rect();
                     n.getBoundsInScreen(br);
                     if (br.width() > 0 && br.height() > 0) {
@@ -350,6 +414,10 @@ public class YlAccessibilityService extends AccessibilityService {
 
             switch (kind) {
                 case IN_ROOM:
+                    if (!n.isVisibleToUser()) break;
+                    Rect anchor = new Rect();
+                    n.getBoundsInScreen(anchor);
+                    if (anchor.isEmpty()) break;
                     anchorSeen = true;
                     loginWallTs = 0;
                     if (bot.canAct("inroom", 10000)) bot.log("[room] 在抖音直播间内(" + label + ")");
@@ -457,6 +525,22 @@ public class YlAccessibilityService extends AccessibilityService {
             }
         }
 
+        if (couponCanvas != null && topRoot && !anchorSeen) {
+            if (bot.canAct("couponback:" + window, 8000) && isTargetActive(bot, window)
+                    && couponCanvas.refresh() && isCouponCanvas(couponCanvas, screenR)
+                    && performGlobalAction(GLOBAL_ACTION_BACK)) {
+                bot.log("[room] 已确认打开完整券页，返回直播间");
+            }
+            return;
+        }
+
+        if (anchorSeen && topRoot && (!hostOnScreen.isEmpty() || inLiveContext)) {
+            if (!hostOnScreen.isEmpty()) currentHost = hostOnScreen;
+            if (roomRecovery.sawLive(session, root.getPackageName().toString(), window, hostOnScreen,
+                    SystemClock.elapsedRealtime())) bot.log("[room] 已确认回到直播间「" + hostOnScreen + "」");
+        }
+        if (navigationCheck) return;
+
         if (anchorSeen && !fudaiPanelSeen) {
             if (groupEntry != null && bot.cfg.grabNormal && bot.cfg.ocrEnabled
                     && android.os.Build.VERSION.SDK_INT >= 30) {
@@ -467,7 +551,6 @@ public class YlAccessibilityService extends AccessibilityService {
                 final String what = regularLabel;
                 bot.scheduleClick(what, bot.humanTapDelayMs(), () -> click(target, () -> {
                     panelOpenedByBot = true;
-                    panelOpenSinceTs = System.currentTimeMillis();
                     bot.log("[room] 已点开福袋入口[" + what + "]");
                 }));
             }
@@ -491,7 +574,7 @@ public class YlAccessibilityService extends AccessibilityService {
         }
 
         // 福利弹窗关闭 —— 已停用点击(2026-11-19): 抖音 41.1.0 上该路径会反复命中"关闭"元素,
-        // 疑似导致直播间被退出。弹窗处理统一交给 OCR(非目标面板识别 + 安全 back), 这里只记录。
+        // 直播间退出按钮也可能叫「关闭」，这里只记录。
         if (!fudaiSeen && popupSeen && closeNode != null && bot.canAct("popuplog", 15000)) {
             bot.log("[room] 检测到关闭按钮(仅记录, 不点击)");
         }
@@ -516,13 +599,13 @@ public class YlAccessibilityService extends AccessibilityService {
                             bot.log("[dbg] 福袋图标点击任务执行");
                             // 点击时刻重新抓取窗口根节点(旧节点在延时后已失效)
                             for (AccessibilityNodeInfo r2 : targetRoots(bot)) {
+                                if (r2.getWindowId() != window || !isTargetActive(bot, window)) continue;
                                 AccessibilityNodeInfo fresh = findStructFudai(r2, blockedRects);
                                 if (fresh == null) continue;
                                 android.graphics.Rect fr = new android.graphics.Rect();
                                 fresh.getBoundsInScreen(fr);
                                 if (gestureTap(fr.centerX(), fr.centerY())) {
                                     panelOpenedByBot = true;
-                                    panelOpenSinceTs = System.currentTimeMillis();
                                     lastTappedIconKey = iconKey(fr.centerX(), fr.centerY());
                                     lastStructKey = lastTappedIconKey;
                                     lastStructTapTs = System.currentTimeMillis();
@@ -543,15 +626,12 @@ public class YlAccessibilityService extends AccessibilityService {
         }
 
         // ---- 面板管理: 仅当有"面板内容证据"(OCR 关键词/原生面板标记)时才视为弹窗 ----
-        // 注意: 本版抖音直播间本身就带常驻全屏 desc=关闭 层(id/bg+), 仅凭它判定弹窗会在房间里
-        // 空转 OCR 并误按 back() 退出直播间 —— 这是"反复退出直播间"的另一真凶。
-        if (h5Backdrop) lastBackdropSeenTs = System.currentTimeMillis();
         long nowPc = System.currentTimeMillis();
         if (fudaiPanelSeen) lastPanelSeenTs = nowPc;
         boolean panelSignal = fudaiPanelSeen
                 || (lastPanelKeywordTs > 0 && nowPc - lastPanelKeywordTs < 15000)
                 || (lastPanelSeenTs > 0 && nowPc - lastPanelSeenTs < 3000);
-        boolean backdropRecent = h5Backdrop || (lastBackdropSeenTs > 0 && nowPc - lastBackdropSeenTs < 5000);
+        boolean modal = !anchorSeen && h5Backdrop != null;
         if (panelSignal && panelFirstSeenTs == 0) panelFirstSeenTs = nowPc;
         // 结构点击试错: 点击后 15 秒内出现面板 => 该图标有效; 否则排除并换下一个候选
         if (panelSignal && lastStructTapTs > 0 && nowPc - lastStructTapTs < 15000) {
@@ -567,35 +647,51 @@ public class YlAccessibilityService extends AccessibilityService {
         // OCR 统一探测: 面板信号存在时快速识别(1.6s); 否则运行期间低频(8s)做弹窗/横幅探测
         // (不依赖背景层/锚点 —— 本版抖音的券弹窗可以没有背景层, 评论框也可能仍然可见)
         if (panelSignal) {
-            maybeOcrH5Dialog(room, false, 0);
+            maybeOcrH5Dialog(room, false, modal, window, 0);
         } else {
-            maybeOcrH5Dialog(room, anchorSeen, 8000);
+            maybeOcrH5Dialog(room, anchorSeen, modal, window, modal ? 0 : 8000);
         }
         if (panelSignal && bot.canAct("panclose", 8000)) {
             boolean afterPart = closePanelAfterTs > 0 && nowPc >= closePanelAfterTs;
             boolean idle = panelOpenedByBot && ocrIdlePasses >= 5;
             boolean tooLong = panelFirstSeenTs > 0 && nowPc - panelFirstSeenTs > 90000;
-            // 二次确认面板仍新鲜(3 秒内): 面板已关时绝不 back, 防止误退直播间
-            boolean fresh = fudaiPanelSeen || (lastPanelKeywordTs > 0 && nowPc - lastPanelKeywordTs < 3000);
-            if (fresh && (afterPart || idle || tooLong)) {
-                lastPanelCloseTs = nowPc;
+            boolean freshModal = modal && lastPanelOcrWindow == window && lastPanelKeywordTs > 0
+                    && nowPc - lastPanelKeywordTs < 3000;
+            if (freshModal && (afterPart || idle || tooLong) && isTargetActive(bot, window)
+                    && h5Backdrop.refresh() && isBackdrop(h5Backdrop, screenR)
+                    && h5Backdrop.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 ocrIdlePasses = 0;
                 panelOpenedByBot = false;
-                panelOpenSinceTs = 0;
                 panelFirstSeenTs = 0;
                 closePanelAfterTs = 0;
                 lastPanelKeywordTs = 0;
-                bot.log("[room] 福袋面板" + (afterPart ? "参与完成" : idle ? "无可操作内容" : "停留过久") + ", back() 收起");
-                performGlobalAction(GLOBAL_ACTION_BACK);
+                bot.log("[room] 福袋面板" + (afterPart ? "参与完成" : idle ? "无可操作内容" : "停留过久") + "，点击面板关闭层");
             }
         }
         if (!panelSignal) {
             panelOpenedByBot = false;
-            panelOpenSinceTs = 0;
             panelFirstSeenTs = 0;
             closePanelAfterTs = 0;
             ocrIdlePasses = 0;
         }
+    }
+
+    private static boolean isCouponCanvas(AccessibilityNodeInfo node, Rect screen) {
+        String id = node.getViewIdResourceName();
+        if (id == null || !(id.equals("big-coupon-pack__canvas") || id.endsWith(":id/big-coupon-pack__canvas"))
+                || !node.isVisibleToUser()) return false;
+        Rect box = new Rect();
+        node.getBoundsInScreen(box);
+        return box.width() >= screen.width() * .75f && box.height() >= screen.height() * .18f
+                && box.top >= screen.top + screen.height() * .16f && box.top <= screen.top + screen.height() * .67f;
+    }
+
+    private static boolean isBackdrop(AccessibilityNodeInfo node, Rect screen) {
+        CharSequence label = node.getContentDescription();
+        if (!node.isVisibleToUser() || !node.isClickable() || label == null || !"关闭".contentEquals(label)) return false;
+        Rect box = new Rect();
+        node.getBoundsInScreen(box);
+        return box.width() >= screen.width() * .85f && box.height() >= screen.height() * .85f;
     }
 
     private volatile long groupEntryPendingUntilTs;
@@ -623,7 +719,7 @@ public class YlAccessibilityService extends AccessibilityService {
         groupEntryPendingUntilTs = System.currentTimeMillis() + 6500L;
         if (gestureTap(bounds.centerX(), bounds.centerY())) {
             bot.log("[room] 已触摸团购福袋入口，等待面板确认");
-            maybeOcrH5Dialog(room, false, 0);
+            maybeOcrH5Dialog(room, false, false, node.getWindowId(), 0);
         } else {
             groupEntryPendingUntilTs = 0;
         }
@@ -681,6 +777,7 @@ public class YlAccessibilityService extends AccessibilityService {
 
     /** 执行真实点击: 优先 ACTION_CLICK, 失败则手势坐标点击(自绘 View 无点击事件时仍可命中)。 */
     private void click(AccessibilityNodeInfo node, Runnable onSuccess) {
+        if (!isTargetActive(BotCore.get(), node.getWindowId()) || !node.refresh()) return;
         AccessibilityNodeInfo cur = node;
         for (int i = 0; i < 5 && cur != null; i++) {
             if (cur.isClickable() && cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
@@ -781,12 +878,10 @@ public class YlAccessibilityService extends AccessibilityService {
     private volatile boolean ocrBusy = false;
     /** OCR 连续无动作计数: 用于收起已开奖/无任务的陈旧福袋面板 */
     private volatile int ocrIdlePasses = 0;
-    private volatile long lastPanelCloseTs = 0;
     /** 面板是否由机器人打开(仅自动收起自己打开的面板) */
     private volatile boolean panelOpenedByBot = false;
-    private volatile long panelOpenSinceTs = 0;
     private volatile long panelFirstSeenTs = 0;
-    private volatile long lastBackdropSeenTs = 0;
+    private volatile int lastPanelOcrWindow = -1;
     /** 最近一次 OCR 在面板中读到福袋关键词的时间(面板存在的内容证据) */
     private volatile long lastPanelKeywordTs = 0;
     /** 结构点击闭环: 记录最近点击的图标/时间/是否成功打开面板(用于排除无效图标) */
@@ -803,8 +898,14 @@ public class YlAccessibilityService extends AccessibilityService {
     private volatile long lastPanelSeenTs = 0;
     private volatile long closePanelAfterTs = 0;
 
-    /** H5 弹窗 OCR: 截图 -> 识别文字 -> 命中任务/抢/领取按钮则手势点击, 开奖类文案记入日志。 */
-    private void maybeOcrH5Dialog(final String room, final boolean inRoom, final long minIntervalMs) {
+    private interface ScreenshotTask { void read(Bitmap image, Runnable done); }
+
+    private void maybeOcrH5Dialog(String room, boolean inRoom, boolean modal, int window, long minIntervalMs) {
+        long session = BotCore.get().runSession();
+        readScreenshot(minIntervalMs, (image, done) -> handleOcr(image, room, inRoom, modal, window, session, done));
+    }
+
+    private void readScreenshot(long minIntervalMs, ScreenshotTask task) {
         final BotCore bot = BotCore.get();
         if (android.os.Build.VERSION.SDK_INT < 30 || !bot.cfg.ocrEnabled || ocrBusy) return;
         long now = System.currentTimeMillis();
@@ -830,7 +931,7 @@ public class YlAccessibilityService extends AccessibilityService {
                             }
                             if (soft == null) { ocrBusy = false; return; }
                             final android.graphics.Bitmap img = soft;
-                            handleOcr(img, room, inRoom, () -> {
+                            task.read(img, () -> {
                                 try { img.recycle(); } catch (Throwable ignored) { }
                                 ocrBusy = false;
                             });
@@ -848,12 +949,12 @@ public class YlAccessibilityService extends AccessibilityService {
         }
     }
 
-    private void handleOcr(final android.graphics.Bitmap bmp, final String room, final boolean inRoom,
-                           final Runnable done) {
+    private void handleOcr(Bitmap bmp, String room, boolean inRoom, boolean modal, int window, long session,
+                           Runnable done) {
         final BotCore bot = BotCore.get();
         OcrHelper.recognize(bmp, getMainExecutor(), items -> {
             try {
-                if (!bot.running || items.isEmpty()) return;
+                if (items.isEmpty() || bot.runSession() != session || !isTargetActive(bot, window)) return;
                 int bw0 = bmp.getWidth(), bh0 = bmp.getHeight();
                 long now = System.currentTimeMillis();
                 GroupBuyPanel group = GroupBuyPanel.read(items, bw0, bh0);
@@ -874,19 +975,24 @@ public class YlAccessibilityService extends AccessibilityService {
                     if (dbg.length() < 200) {
                         dbg.append(t.length() > 16 ? t.substring(0, 16) : t).append("|");
                     }
-                    if (tapText == null && isOcrTapText(t)) { tapText = t; tapBox = it.box; }
+                    if (tapText == null && it.box != null && it.box.centerY() > bh0 * .52f && isOcrTapText(t)) {
+                        tapText = t;
+                        tapBox = it.box;
+                    }
                     if (resultText == null && it.box != null && it.box.centerY() > bh0 * 0.55f
                             && BotCore.isOcrDrawResult(t)) resultText = t;
                 }
                 if (bot.canAct("ocrlog", 5000)) bot.log("[ocr] 弹窗文字: " + dbg);
-                // 面板关键词 => 记录"面板存在"的内容证据(驱动面板生命周期与 back 保护)
+                // 只在画面下半部确认面板内容，主播视频里的券文案不能证明打开了面板。
                 boolean panelKw = false;
                 for (OcrHelper.Item it : items) {
+                    if (it.box == null || it.box.centerY() < bh0 * .47f) continue;
                     String kw = it.text == null ? "" : it.text.trim();
                     if (kw.contains("福袋奖品") || kw.contains("超级福袋") || kw.contains("一键发表评论")
                             || kw.contains("参与条件") || kw.contains("去发表评论")
                             || kw.contains("发送评论") || kw.contains("福袋任务") || kw.contains("后开奖")) {
                         lastPanelKeywordTs = System.currentTimeMillis();
+                        if (modal) lastPanelOcrWindow = window;
                         panelKw = true;
                         break;
                     }
@@ -896,10 +1002,11 @@ public class YlAccessibilityService extends AccessibilityService {
                 boolean redPacket = false;
                 int bw = bmp.getWidth(), bh = bmp.getHeight();
                 for (OcrHelper.Item it : items) {
+                    if (!modal || panelKw) break;
                     String rt = it.text == null ? "" : it.text.trim();
                     if (rt.isEmpty() || it.box == null) continue;
                     boolean centered = it.box.centerX() > bw * 0.25f && it.box.centerX() < bw * 0.75f
-                            && it.box.top > bh * 0.30f;
+                            && it.box.top > bh * 0.48f;
                     if (!centered) continue;
                     if (rt.contains("人气红包") || rt.contains("会员红包") || rt.contains("粉丝团") || rt.contains("需1钻")
                             || rt.contains("红包已过期") || rt.contains("钻减")
@@ -917,15 +1024,16 @@ public class YlAccessibilityService extends AccessibilityService {
                         }
                         rejectedIconKeys.add(lk);
                     }
-                    panelOpenedByBot = true; // 强制纳入自动收起(人气红包不管谁打开都收起)
-                    lastPanelKeywordTs = System.currentTimeMillis(); // 提供面板存在证据, 允许安全 back 收起
+                    panelOpenedByBot = true;
+                    lastPanelOcrWindow = window;
+                    lastPanelKeywordTs = System.currentTimeMillis();
                     ocrIdlePasses = 99;
                     if (bot.canAct("redpacketlog", 10000)) {
                         bot.log("[ocr] 非目标面板(红包/消费券) -> 排除该图标并收起面板");
                     }
                     return;
                 }
-                if (tapText != null && tapBox != null) {
+                if (tapText != null && tapBox != null && (panelKw || modal)) {
                     String label = tapText.length() > 12 ? tapText.substring(0, 12) : tapText;
                     if (bot.canAct("ocrtap:" + label, 6000)) {
                         ocrIdlePasses = 0;
@@ -971,7 +1079,6 @@ public class YlAccessibilityService extends AccessibilityService {
                         int y = Math.max(1, waitBox.top - 60);
                         if (bot.canAct("roomwaiting", 20000) && gestureTap(x, y)) {
                             panelOpenedByBot = true;
-                            panelOpenSinceTs = System.currentTimeMillis();
                             bot.log("[ocr] 命中[待参与] -> 手势点击福袋图标(" + x + "," + y + ")");
                         }
                     } else if (hit != null) {
@@ -980,7 +1087,6 @@ public class YlAccessibilityService extends AccessibilityService {
                         int y = hitBox.centerY();
                         if (bot.canAct("roomfudaitap", 30000) && gestureTap(x, y)) {
                             panelOpenedByBot = true;
-                            panelOpenSinceTs = System.currentTimeMillis();
                             bot.log("[ocr] 房间福袋横幅[" + hit + "] -> 手势点击(" + x + "," + y + ")");
                         }
                     } else if (badge != null) {
@@ -989,7 +1095,6 @@ public class YlAccessibilityService extends AccessibilityService {
                         int y = Math.max(1, badgeBox.top - 20);
                         if (bot.canAct("roombadgetap", 30000) && gestureTap(x, y)) {
                             panelOpenedByBot = true;
-                            panelOpenSinceTs = System.currentTimeMillis();
                             bot.log("[ocr] 房间福袋角标[" + badge + "] -> 手势点击(" + x + "," + y + ")");
                         }
                     }

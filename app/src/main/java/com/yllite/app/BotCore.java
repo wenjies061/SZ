@@ -43,6 +43,7 @@ public final class BotCore {
     private final Random rnd = new Random();
 
     public volatile boolean running = false;
+    private volatile long runSession = 0;
     public volatile boolean dumpMode = false; // 观察模式: 只向 logcat(YLDump) 记录节点文本, 不点击
     public volatile Config cfg = new Config();
 
@@ -55,6 +56,13 @@ public final class BotCore {
     private BotCore() {}
 
     public synchronized void configure(Config c) { this.cfg = c; }
+
+    synchronized void setRunning(boolean enabled) {
+        if (running != enabled) runSession++;
+        running = enabled;
+    }
+
+    long runSession() { return runSession; }
 
     public synchronized boolean canAct(String key, long cooldownMs) {
         long now = System.currentTimeMillis();

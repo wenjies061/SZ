@@ -99,7 +99,7 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) { }
             bot.configure(c);
             bot.resetStats();
-            bot.running = true;
+            bot.setRunning(true);
             bot.log("[bot] 真机模式启动: 目标=" + describeTarget(c.targetPkg)
                     + " 同房上限=" + c.sameRoomGrabLimit + " 速度=" + c.speed + "x");
         }
@@ -107,7 +107,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void stopBot() {
             BotCore bot = BotCore.get();
-            bot.running = false;
+            bot.setRunning(false);
             bot.log("[bot] 真机模式已停止");
         }
 
