@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="console_surface">#101815</color>
+    <style name="ConsoleTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/console_surface</item>
+        <item name="android:statusBarColor">@color/console_surface</item>
+        <item name="android:navigationBarColor">@color/console_surface</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

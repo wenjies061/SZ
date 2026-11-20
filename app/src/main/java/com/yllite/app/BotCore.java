@@ -1,8 +1,5 @@
 package com.yllite.app;
 
-import android.os.Handler;
-import android.os.Looper;
-
 import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Map;
@@ -21,10 +18,6 @@ public final class BotCore {
 
     public static class Config {
         public String targetPkg = "any";      // any: 抖音+极速版 | dy: 仅抖音 | lite: 仅极速版
-        public String clickMode = "random";   // fixed 固定提前秒数 | random 随机区间
-        public int fixedSeconds = 5;          // 开奖前提前多少秒点击(借鉴原版"抢在开奖瞬间"语义)
-        public int randomMin = 3;
-        public int randomMax = 8;
         public int sameRoomGrabLimit = 10;    // 同一主播直播间累计参与上限(仅统计真实参与动作)
         public boolean grabNormal = true;     // 普通福袋
         public boolean grabSuper = true;      // 超级福袋
@@ -40,7 +33,6 @@ public final class BotCore {
     private static final BotCore INSTANCE = new BotCore();
     public static BotCore get() { return INSTANCE; }
 
-    private final Handler main = new Handler(Looper.getMainLooper());
     /** 独立定时线程: 延时点击不依赖主线程消息队列(主线程被无障碍调用占用时也能按时执行) */
     private final java.util.concurrent.ScheduledExecutorService sched =
             java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
@@ -54,7 +46,8 @@ public final class BotCore {
     public volatile boolean dumpMode = false; // 观察模式: 只向 logcat(YLDump) 记录节点文本, 不点击
     public volatile Config cfg = new Config();
 
-    public int grabs = 0, popups = 0, engaged = 0, escaped = 0, skipped = 0;
+    public volatile int grabs = 0;
+    public volatile int popups = 0, engaged = 0, skipped = 0;
     public final Map<String, Integer> grabCount = new HashMap<>();
     private final ArrayDeque<String> logs = new ArrayDeque<>();
     private final Map<String, Long> cooldown = new HashMap<>();
@@ -83,17 +76,22 @@ public final class BotCore {
         return sb.toString();
     }
 
-    public int grabCountOf(String room) {
+    public synchronized int grabCountOf(String room) {
         Integer n = grabCount.get(room);
         return n == null ? 0 : n;
     }
-    public void addGrab(String room) { grabCount.put(room, grabCountOf(room) + 1); }
+    public synchronized void addGrab(String room) { grabCount.put(room, grabCountOf(room) + 1); }
+
+    public synchronized void recordConfirmedGrab(String room) {
+        addGrab(room);
+        grabs++;
+    }
 
     /** 启动时重置计数(统计+同房上限), 由控制台"开始"触发。 */
     public synchronized void resetStats() {
         grabCount.clear();
         cooldown.clear();
-        grabs = 0; popups = 0; engaged = 0; escaped = 0; skipped = 0;
+        grabs = 0; popups = 0; engaged = 0; skipped = 0;
     }
 
     /** 目标包名过滤: any 匹配抖音/极速版及其衍生包名(前缀 com.ss.android.ugc.aweme)。 */
@@ -104,10 +102,11 @@ public final class BotCore {
         return pkg.startsWith(PKG_DOUYIN); // any
     }
 
-    /** 延时点击调度: 固定/随机区间, 除以速度倍率。在独立定时线程执行。 */
+    /** 在独立定时线程执行延时点击。 */
     public void scheduleClick(String what, long delayMs, Runnable action) {
         final long d = Math.max(200, delayMs);
         sched.schedule(() -> {
+            if (!running) return;
             try {
                 action.run();
             } catch (Throwable t) {
@@ -117,34 +116,24 @@ public final class BotCore {
         log("[bot] 计划 " + (delayMs / 1000.0) + "s 后点击 " + what);
     }
 
-    public void runDelayed(long delayMs, Runnable action) {
-        final long d = Math.max(200, delayMs);
-        sched.schedule(() -> {
-            try {
-                action.run();
-            } catch (Throwable t) {
-                android.util.Log.i("YLBot", "[dbg] 延时任务异常: " + t);
-            }
-        }, d, java.util.concurrent.TimeUnit.MILLISECONDS);
-    }
-
     /** 抢按钮的人类化短延迟(0.3~0.9s), 避免倒计时结束瞬间机械响应。 */
     public long humanTapDelayMs() {
         long ms = 300 + rnd.nextInt(600);
         return (long) (ms / Math.max(0.5, cfg.speed));
     }
 
-    public long pickClickDelayMs() {
-        Config c = cfg;
-        int sec = "fixed".equals(c.clickMode)
-                ? c.fixedSeconds
-                : (c.randomMin + rnd.nextInt(Math.max(1, c.randomMax - c.randomMin + 1)));
-        return (long) (Math.max(0.3, sec / Math.max(0.5, c.speed)) * 1000);
-    }
-
     // ---- 分类(对真实节点用"包含"匹配 + 排除词) ----
 
     public enum Kind { IN_ROOM, FUDAI, GRAB, CLAIM, DISMISS, RESULT, LOGIN_WALL, POPUP_MARK, CLOSE, ENGAGE, NOISE }
+
+    static boolean isOcrDrawResult(String text) {
+        String value = text.replaceAll("[\\s　]+", "");
+        return value.equals("已参与") || value.startsWith("已参与抽奖") || value.equals("已加入")
+                || value.startsWith("参与成功") || value.startsWith("已成功参与")
+                || value.startsWith("任务已完成") || value.equals("已开奖")
+                || value.startsWith("恭喜中奖") || value.startsWith("恭喜你中奖")
+                || value.startsWith("很遗憾") || value.equals("未中奖");
+    }
 
     public static Kind classify(CharSequence s) {
         if (s == null) return Kind.NOISE;
@@ -215,12 +204,4 @@ public final class BotCore {
         return -1;
     }
 
-    /** 按配置取"开奖前提前点击秒数"。 */
-    public long pickPreClickSeconds() {
-        Config c = cfg;
-        double sec = "fixed".equals(c.clickMode)
-                ? c.fixedSeconds
-                : (c.randomMin + rnd.nextInt(Math.max(1, c.randomMax - c.randomMin + 1)));
-        return (long) Math.max(0.3, sec);
-    }
 }

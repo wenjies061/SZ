@@ -5,4 +5,4 @@ local.properties
 *.iml
 .idea/
 dist/*.apk
-!dist/SZ-v3.2.1-debug.apk
+!dist/lucky-v3.2.4-debug.apk

@@ -1,6 +1,7 @@
 package com.yllite.app;
 
 import android.accessibilityservice.AccessibilityService;
+import android.graphics.Rect;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -24,7 +25,6 @@ public class YlAccessibilityService extends AccessibilityService {
     public static volatile long loginWallTs = 0;
 
     private long lastDumpTs = 0;
-    private static final long DUMP_THROTTLE_MS = 1500;
     private android.content.BroadcastReceiver adbCtl;
     private final android.os.Handler watchdog = new android.os.Handler(android.os.Looper.getMainLooper());
     private long lastHeartbeatTs = 0;
@@ -52,7 +52,7 @@ public class YlAccessibilityService extends AccessibilityService {
         }
     };
 
-    /** 在扫描线程执行一次扫描+dump; 卡死超过 8 秒则重建线程自愈。 */
+    /** 在扫描线程执行一次扫描和观察模式转储，阻塞超过 20 秒后重建线程。 */
     private void scheduleScan() {
         final BotCore bot = BotCore.get();
         long now = System.currentTimeMillis();
@@ -77,7 +77,7 @@ public class YlAccessibilityService extends AccessibilityService {
             }
         } else if (now - scanStartTs > 20000 && now - scanHangLoggedTs > 15000) {
             scanHangLoggedTs = now;
-            bot.log("[dbg] 扫描阻塞超过8s, 重建扫描线程自愈");
+            bot.log("[dbg] 扫描阻塞超过20s, 重建扫描线程");
             try { scanner.shutdownNow(); } catch (Throwable ignored) { }
             scanner = java.util.concurrent.Executors.newSingleThreadExecutor();
             scanBusy = false;
@@ -97,16 +97,7 @@ public class YlAccessibilityService extends AccessibilityService {
             if (cn != null && cn.length() > 0) currentRoom = cn.toString();
         }
 
-        // 观察模式: 不要求 running, 只记录节点文本供选择器校准
-        if (bot.dumpMode) {
-            long nowD = System.currentTimeMillis();
-            if (nowD - lastDumpTs >= DUMP_THROTTLE_MS) {
-                lastDumpTs = nowD;
-                dumpNodes();
-            }
-        }
-
-        if (!bot.running) return;
+        if (!bot.running && !bot.dumpMode) return;
         long now = System.currentTimeMillis();
         if (now - lastScanTs < SCAN_THROTTLE_MS) return;
         lastScanTs = now;
@@ -191,7 +182,9 @@ public class YlAccessibilityService extends AccessibilityService {
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
-        registerAdbControl();
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            registerAdbControl();
+        }
         watchdog.removeCallbacks(watchTask);
         watchdog.postDelayed(watchTask, 500);
         BotCore.get().log("[bot] 无障碍服务已连接(监听抖音/抖音极速版)");
@@ -230,10 +223,11 @@ public class YlAccessibilityService extends AccessibilityService {
         f.addAction("com.yllite.app.STOP");
         f.addAction("com.yllite.app.DUMP_ON");
         f.addAction("com.yllite.app.DUMP_OFF");
+        String shellPermission = "android.permission.DUMP";
         if (android.os.Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(adbCtl, f, android.content.Context.RECEIVER_EXPORTED);
+            registerReceiver(adbCtl, f, shellPermission, null, android.content.Context.RECEIVER_EXPORTED);
         } else {
-            registerReceiver(adbCtl, f);
+            registerReceiver(adbCtl, f, shellPermission, null);
         }
     }
 
@@ -253,6 +247,10 @@ public class YlAccessibilityService extends AccessibilityService {
     }
 
     private void scanRoot(BotCore bot, AccessibilityNodeInfo root, String room, boolean inLiveContext) {
+        if (groupPanelPending(System.currentTimeMillis())) {
+            maybeOcrH5Dialog(room, false, 0);
+            return;
+        }
         boolean popupSeen = false;
         boolean anchorSeen = false;
         boolean fudaiSeen = false;
@@ -261,6 +259,9 @@ public class YlAccessibilityService extends AccessibilityService {
         java.util.List<android.graphics.Rect> blockedRects = new java.util.ArrayList<>();
         AccessibilityNodeInfo sendNode = null;
         AccessibilityNodeInfo closeNode = null;
+        AccessibilityNodeInfo groupEntry = null;
+        AccessibilityNodeInfo regularEntry = null;
+        String regularLabel = null;
         android.graphics.Rect screenR = new android.graphics.Rect();
         root.getBoundsInScreen(screenR);
         final int scrW = Math.max(1, screenR.width());
@@ -292,6 +293,12 @@ public class YlAccessibilityService extends AccessibilityService {
                 currentHost = text.toString().trim();
             }
 
+            if (GroupBuyPanel.ENTRY.contentEquals(desc == null ? "" : desc) && n.isVisibleToUser()) {
+                groupEntry = n;
+                fudaiSeen = true;
+                continue;
+            }
+
             // H5/自绘弹窗探测: 全屏可点击背景层 desc="关闭"(弹窗内容无障碍不可见)
             if (desc != null && "关闭".contentEquals(desc) && n.isClickable()) {
                 android.graphics.Rect hb = new android.graphics.Rect();
@@ -314,8 +321,13 @@ public class YlAccessibilityService extends AccessibilityService {
             // 普通福袋面板标记(原生节点): 标题"福袋"/参与条件/发送评论/去发表评论
             if (label != null) {
                 String lv = label.toString();
-                if (lv.equals("福袋") || lv.contains("参与条件") || lv.contains("发送评论")
-                        || lv.contains("去发表评论")) fudaiPanelSeen = true;
+                if (lv.equals("福袋")) {
+                    Rect bounds = new Rect();
+                    n.getBoundsInScreen(bounds);
+                    if (!bounds.isEmpty() && bounds.centerY() > screenR.top + scrH * 0.30f) fudaiPanelSeen = true;
+                } else if (lv.contains("参与条件") || lv.contains("发送评论") || lv.contains("去发表评论")) {
+                    fudaiPanelSeen = true;
+                }
                 // 房间左上角出现非目标图标(红包/券): 把其矩形加入屏蔽表, 结构识别只避开这些区域
                 // (同排其他空白图标仍可能是福袋, 不能整排禁用)
                 if (lv.equals("红包") || lv.contains("电商优惠券") || lv.contains("双11消费券")
@@ -349,38 +361,20 @@ public class YlAccessibilityService extends AccessibilityService {
                     }
                     break;
                 case FUDAI: {
-                    if (!anchorSeen) break; // 福袋仅直播间内有效
                     fudaiSeen = true;
                     String v = label.toString();
                     boolean isSuper = v.contains("超级");
                     boolean isHb = v.contains("红包");
                     if ((isSuper && !bot.cfg.grabSuper) || (isHb && !bot.cfg.grabHb)
                             || (!isSuper && !isHb && !bot.cfg.grabNormal)) break;
-                    int done = bot.grabCountOf(room);
-                    if (done >= bot.cfg.sameRoomGrabLimit) {
-                        if (bot.canAct("limitlog", 5000)) {
-                            bot.skipped++;
-                            bot.log("[room] 达到同房上限(" + bot.cfg.sameRoomGrabLimit + "), 跳过[" + v + "]");
+                    if (regularEntry == null && n.isVisibleToUser()) {
+                        Rect bounds = new Rect();
+                        n.getBoundsInScreen(bounds);
+                        if (!bounds.isEmpty() && bounds.centerY() < screenR.top + scrH * 0.42f) {
+                            regularEntry = n;
+                            regularLabel = v;
                         }
-                        break;
                     }
-                    if (!bot.canAct("fudai:" + room + ":" + v, 8000)) break;
-                    // 开面板间隔(与结构识别共用): 控制点开频率, 防风控
-                    if (!bot.canAct("panelopen:" + room, Math.max(10, bot.cfg.openIntervalSec) * 1000L)) break;
-                    final AccessibilityNodeInfo target = n;
-                    final String what = v;
-                    // 入口点击: 立即点开面板(任务型福袋需要尽早打开并完成评论任务;
-                    // "提前秒数"只用于弹窗内"抢"按钮的时机, 不用于入口)
-                    long cd = BotCore.parseCountdownSeconds(
-                            (text != null ? text.toString() : "") + " " + (desc != null ? desc.toString() : ""));
-                    if (cd > 0) bot.log("[room] 检测到[" + v + "] 倒计时" + cd + "s, 立即点开");
-                    else bot.log("[room] 检测到[" + v + "], 立即点开");
-                    bot.scheduleClick(what, bot.humanTapDelayMs(),
-                            () -> click(target, () -> {
-                                panelOpenedByBot = true;
-                                panelOpenSinceTs = System.currentTimeMillis();
-                                bot.log("[room] 已点开福袋入口[" + what + "]");
-                            }));
                     break;
                 }
                 case GRAB: {
@@ -463,6 +457,24 @@ public class YlAccessibilityService extends AccessibilityService {
             }
         }
 
+        if (anchorSeen && !fudaiPanelSeen) {
+            if (groupEntry != null && bot.cfg.grabNormal && bot.cfg.ocrEnabled
+                    && android.os.Build.VERSION.SDK_INT >= 30) {
+                openGroupBuyPanel(bot, groupEntry, currentHost.isEmpty() ? room : currentHost);
+            } else if (regularEntry != null && bot.grabCountOf(room) < bot.cfg.sameRoomGrabLimit
+                    && bot.canAct("panelopen:" + room, Math.max(10, bot.cfg.openIntervalSec) * 1000L)) {
+                final AccessibilityNodeInfo target = regularEntry;
+                final String what = regularLabel;
+                bot.scheduleClick(what, bot.humanTapDelayMs(), () -> click(target, () -> {
+                    panelOpenedByBot = true;
+                    panelOpenSinceTs = System.currentTimeMillis();
+                    bot.log("[room] 已点开福袋入口[" + what + "]");
+                }));
+            }
+        }
+
+        if (groupPanelPending(System.currentTimeMillis())) return;
+
         // 普通福袋: 点过"去发表评论"后出现"发送"按钮, 自动发送完成任务(仅福袋上下文或自动发送窗口内)
         long nowSend = System.currentTimeMillis();
         boolean sendWindow = nowSend < awaitSendUntilTs;
@@ -515,7 +527,6 @@ public class YlAccessibilityService extends AccessibilityService {
                                     lastStructKey = lastTappedIconKey;
                                     lastStructTapTs = System.currentTimeMillis();
                                     lastStructSawPanel = false;
-                                    bot.grabs++;
                                     bot.log("[room] >> 手势点击福袋图标(" + fr.centerX() + "," + fr.centerY() + ")");
                                 } else {
                                     bot.log("[room] 手势点击失败");
@@ -584,6 +595,87 @@ public class YlAccessibilityService extends AccessibilityService {
             panelFirstSeenTs = 0;
             closePanelAfterTs = 0;
             ocrIdlePasses = 0;
+        }
+    }
+
+    private volatile long groupEntryPendingUntilTs;
+    private volatile long lastGroupPanelSeenTs;
+    private String groupRoundRoom = "";
+    private long groupRoundDeadlineTs;
+    private GroupBuyPanel.Stage groupAction = GroupBuyPanel.Stage.UNKNOWN;
+    private GroupBuyPanel.Stage groupLastStage = GroupBuyPanel.Stage.UNKNOWN;
+    private boolean groupConfirmed;
+
+    private boolean groupPanelPending(long now) {
+        return now < groupEntryPendingUntilTs || (lastGroupPanelSeenTs > 0 && now - lastGroupPanelSeenTs < 4500);
+    }
+
+    private void openGroupBuyPanel(BotCore bot, AccessibilityNodeInfo node, String room) {
+        if (!node.refresh() || !node.isVisibleToUser()) return;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        CharSequence desc = node.getContentDescription();
+        if (desc == null || !GroupBuyPanel.ENTRY.contentEquals(desc) || bounds.isEmpty()
+                || !isTargetActive(bot, node.getWindowId())
+                || bot.grabCountOf(room) >= bot.cfg.sameRoomGrabLimit
+                || !bot.canAct("panelopen:" + room, Math.max(10, bot.cfg.openIntervalSec) * 1000L)) return;
+        // 这一入口的父容器 ACTION_CLICK 会返回 true，但只有触摸事件会打开面板。
+        groupEntryPendingUntilTs = System.currentTimeMillis() + 6500L;
+        if (gestureTap(bounds.centerX(), bounds.centerY())) {
+            bot.log("[room] 已触摸团购福袋入口，等待面板确认");
+            maybeOcrH5Dialog(room, false, 0);
+        } else {
+            groupEntryPendingUntilTs = 0;
+        }
+    }
+
+    private boolean isTargetActive(BotCore bot, int windowId) {
+        if (!bot.running) return false;
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null || (windowId >= 0 && root.getWindowId() != windowId)) return false;
+        CharSequence pkg = root.getPackageName();
+        return pkg != null && BotCore.isTargetPackage(pkg.toString(), bot.cfg);
+    }
+
+    private void handleGroupBuyPanel(BotCore bot, GroupBuyPanel panel, String room, long now) {
+        lastGroupPanelSeenTs = now;
+        groupEntryPendingUntilTs = 0;
+        if (!bot.cfg.grabNormal) return;
+
+        long deadline = panel.drawSeconds > 0 ? now + panel.drawSeconds * 1000 : 0;
+        boolean sameRound = room.equals(groupRoundRoom) && now < groupRoundDeadlineTs + 6000
+                && (deadline == 0 || Math.abs(deadline - groupRoundDeadlineTs) < 15000);
+        if (!sameRound && deadline > 0) {
+            groupRoundRoom = room;
+            groupRoundDeadlineTs = deadline;
+            groupAction = GroupBuyPanel.Stage.UNKNOWN;
+            groupLastStage = GroupBuyPanel.Stage.UNKNOWN;
+            groupConfirmed = false;
+        }
+        if (panel.stage != GroupBuyPanel.Stage.UNKNOWN && panel.stage != groupLastStage) {
+            groupLastStage = panel.stage;
+            switch (panel.stage) {
+                case COMMENT: bot.log("[ocr] 团购福袋面板已确认，待发送任务评论"); break;
+                case START_WATCH: bot.log("[ocr] 团购福袋评论任务完成，待开始观看直播任务"); break;
+                case WATCHING: bot.log("[ocr] 团购福袋观看任务进行中，请留在当前直播间"); break;
+                case PARTICIPATED: bot.log("[ocr] 团购福袋已参与抽奖，等待开奖"); break;
+                default: break;
+            }
+        }
+        if (panel.stage == GroupBuyPanel.Stage.PARTICIPATED) {
+            if (room.equals(groupRoundRoom)) {
+                if (!groupConfirmed && groupAction != GroupBuyPanel.Stage.UNKNOWN) bot.recordConfirmedGrab(room);
+                groupConfirmed = true;
+            }
+            return;
+        }
+        if ((panel.stage != GroupBuyPanel.Stage.COMMENT && panel.stage != GroupBuyPanel.Stage.START_WATCH)
+                || groupConfirmed || groupRoundDeadlineTs <= now || !room.equals(groupRoundRoom)
+                || panel.stage.ordinal() <= groupAction.ordinal()
+                || bot.grabCountOf(room) >= bot.cfg.sameRoomGrabLimit || !isTargetActive(bot, -1)) return;
+        if (gestureTap(panel.button.centerX(), panel.button.centerY())) {
+            groupAction = panel.stage;
+            bot.log("[ocr] 团购福袋已触摸按钮，等待任务状态更新");
         }
     }
 
@@ -686,7 +778,7 @@ public class YlAccessibilityService extends AccessibilityService {
     }
 
     private long lastOcrTs = 0;
-    private boolean ocrBusy = false;
+    private volatile boolean ocrBusy = false;
     /** OCR 连续无动作计数: 用于收起已开奖/无任务的陈旧福袋面板 */
     private volatile int ocrIdlePasses = 0;
     private volatile long lastPanelCloseTs = 0;
@@ -761,8 +853,17 @@ public class YlAccessibilityService extends AccessibilityService {
         final BotCore bot = BotCore.get();
         OcrHelper.recognize(bmp, getMainExecutor(), items -> {
             try {
-                if (items.isEmpty()) return;
+                if (!bot.running || items.isEmpty()) return;
                 int bw0 = bmp.getWidth(), bh0 = bmp.getHeight();
+                long now = System.currentTimeMillis();
+                GroupBuyPanel group = GroupBuyPanel.read(items, bw0, bh0);
+                if (group != null) {
+                    if (isTargetActive(bot, -1)) {
+                        handleGroupBuyPanel(bot, group, currentHost.isEmpty() ? room : currentHost, now);
+                    }
+                    return;
+                }
+                if (groupPanelPending(now)) return;
                 StringBuilder dbg = new StringBuilder();
                 String tapText = null;
                 android.graphics.Rect tapBox = null;
@@ -774,7 +875,8 @@ public class YlAccessibilityService extends AccessibilityService {
                         dbg.append(t.length() > 16 ? t.substring(0, 16) : t).append("|");
                     }
                     if (tapText == null && isOcrTapText(t)) { tapText = t; tapBox = it.box; }
-                    if (resultText == null && isOcrResultText(t)) { resultText = t; }
+                    if (resultText == null && it.box != null && it.box.centerY() > bh0 * 0.55f
+                            && BotCore.isOcrDrawResult(t)) resultText = t;
                 }
                 if (bot.canAct("ocrlog", 5000)) bot.log("[ocr] 弹窗文字: " + dbg);
                 // 面板关键词 => 记录"面板存在"的内容证据(驱动面板生命周期与 back 保护)
@@ -892,7 +994,7 @@ public class YlAccessibilityService extends AccessibilityService {
                         }
                     }
                 }
-                if (resultText != null && bot.canAct("ocrresult:" + resultText, 8000)) {
+                if (panelKw && resultText != null && bot.canAct("ocrresult:" + resultText, 8000)) {
                     bot.log("[ocr] 开奖/结果文案: " + resultText);
                 }
                 // 福袋面板里读到"已参与/中奖"等结果 => 参与已完成, 计划 4 秒后收起面板
@@ -914,13 +1016,6 @@ public class YlAccessibilityService extends AccessibilityService {
                 || t.contains("抢福袋") || t.contains("立即抢") || t.contains("去抢") || t.contains("开抢")
                 || t.contains("开心收下") || t.contains("我知道了") || t.contains("收下祝福")
                 || t.contains("立即领取") || t.contains("马上领取") || t.contains("点击领取");
-    }
-
-    /** OCR 命中的开奖/结果文案(只记录, 不点击)。 */
-    private static boolean isOcrResultText(String t) {
-        return t.contains("已参与") || t.contains("参与成功") || t.contains("已开奖")
-                || t.contains("恭喜") || t.contains("中奖") || t.contains("很遗憾")
-                || t.contains("未中奖") || t.contains("已加入");
     }
 
     @Override

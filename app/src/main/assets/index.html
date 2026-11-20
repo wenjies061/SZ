@@ -1,208 +1,367 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SZ 真实抢福袋</title>
+<meta name="theme-color" content="#101815">
+<title>lucky 福袋控制台</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font: 14px/1.6 "Microsoft YaHei", sans-serif; background: #f2f3f5; color: #222; }
-  .appbar { background: #7B68EE; color: #fff; padding: 12px 18px; display: flex; align-items: center; gap: 12px; }
-  .appbar b { font-size: 17px; }
-  .appbar .lic { margin-left: auto; font-size: 12px; background: rgba(255,255,255,.18); padding: 3px 10px; border-radius: 12px; }
-  .wrap { max-width: 980px; margin: 16px auto; padding: 0 14px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
-  .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.05); }
-  .card h3 { font-size: 14px; color: #7B68EE; margin-bottom: 10px; border-left: 3px solid #7B68EE; padding-left: 8px; }
-  .row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
-  .row label { flex: 1; }
-  .row input[type=number], .row select { width: 90px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 5px; }
-  .row select { width: 120px; }
-  .switch { position: relative; width: 42px; height: 22px; flex: none; }
-  .switch input { opacity: 0; width: 0; height: 0; }
-  .slider { position: absolute; inset: 0; background: #ccc; border-radius: 22px; transition: .2s; cursor: pointer; }
-  .slider:before { content: ""; position: absolute; width: 18px; height: 18px; left: 2px; top: 2px; background: #fff; border-radius: 50%; transition: .2s; }
-  .switch input:checked + .slider { background: #7B68EE; }
-  .switch input:checked + .slider:before { transform: translateX(20px); }
-  .note { font-size: 12px; color: #555; background: #f3f4ff; border-radius: 5px; padding: 6px 9px; margin-top: 8px; }
-  .note.warn { color: #b00; background: #fff1f0; }
-  .stat { display: flex; gap: 8px; flex-wrap: wrap; }
-  .stat .s { flex: 1; min-width: 80px; background: #f7f6ff; border-radius: 8px; padding: 10px; text-align: center; }
-  .stat .s b { display: block; font-size: 20px; color: #7B68EE; }
-  .stat .s span { font-size: 11px; color: #888; }
-  #botLogs { height: 300px; }
-  .logs { overflow-y: auto; background: #10131a; color: #b9e28c; font: 12px/1.7 Consolas, monospace; border-radius: 8px; padding: 10px; white-space: pre-wrap; word-break: break-all; }
-  #floaty { position: fixed; right: 18px; bottom: 18px; width: 220px; background: rgba(0,0,0,.87); border-radius: 8px; padding: 8px; color: #fff; z-index: 99; box-shadow: 0 6px 20px rgba(0,0,0,.35); cursor: move; user-select: none; -webkit-user-select: none; }
-  #floaty .btns { display: flex; gap: 6px; }
-  #floaty button { flex: 1; border: 0; border-radius: 8px; padding: 9px 0; font-size: 14px; font-weight: bold; cursor: pointer; color: #fff; }
-  #btnStart { background: #FF00C853; }
-  #btnExit { background: #7a0000; }
-  #floaty .mini { margin-top: 6px; height: 34px; overflow: hidden; font: 10px/1.5 Consolas, monospace; color: #9fd06a; }
-  #speedVal { color: #7B68EE; font-weight: bold; }
-  button.act { background:#7B68EE; color:#fff; border:0; border-radius:6px; padding:8px 14px; cursor:pointer; }
-  button.stop { background:#7a0000; color:#fff; border:0; border-radius:6px; padding:8px 14px; cursor:pointer; }
+  :root {
+    color-scheme: dark;
+    font: 15px/1.55 system-ui, "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+    --background: #101815;
+    --surface: #17211c;
+    --field: #101a15;
+    --edge: #304238;
+    --text: #eff7ee;
+    --muted: #aabdb1;
+    --accent: #c2f58d;
+    --warning: #f8d394;
+    color: var(--text);
+    background: var(--background);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; }
+  button, input, select { font: inherit; }
+  button, label, summary { -webkit-tap-highlight-color: transparent; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  [hidden] { display: none !important; }
+
+  .shell { width: 100%; max-width: 1060px; margin: 0 auto; padding: 0 20px 32px; }
+  .masthead { display: flex; justify-content: space-between; align-items: center; padding: 19px 0 16px; }
+  .wordmark { font-size: 15px; font-weight: 850; letter-spacing: .07em; }
+  .version { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  .hero {
+    padding: 23px 21px 19px;
+    border: 1px solid #345341;
+    border-radius: 24px;
+    background: radial-gradient(ellipse at 100% 0%, #315440 0%, transparent 66%),
+      linear-gradient(145deg, #1a3025, #17251d 78%);
+  }
+  .hero-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h1, h2, p { margin: 0; }
+  h1 { font-size: 26px; font-size: clamp(24px, 6.5vw, 34px); line-height: 1.2; font-weight: 760; }
+  h2 { font-size: 17px; line-height: 1.35; font-weight: 730; }
+
+  .state {
+    display: inline-flex; flex: none; align-items: center; gap: 6px;
+    border-radius: 20px; padding: 4px 9px;
+    border: 1px solid #527361; background: #263f32; color: #e5f0e6;
+    font-size: 11px; font-weight: 700; white-space: nowrap;
+  }
+  .state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .state[data-tone="active"] { color: var(--accent); border-color: #639351; background: #2b482a; }
+  .state[data-tone="warning"] { color: var(--warning); border-color: #8c724a; background: #483a28; }
+  .status-detail { margin-top: 8px; min-height: 22px; color: #c9d9cd; font-size: 13px; }
+  .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 16px; }
+  button {
+    min-height: 44px; padding: 9px 10px; color: var(--text); font-size: 13px; font-weight: 680;
+    background: #23382d; border: 1px solid #496556; border-radius: 11px; cursor: pointer;
+  }
+  button:active { filter: brightness(.91); }
+  button:disabled { opacity: .48; cursor: default; }
+  .primary {
+    grid-column: 1 / -1; min-height: 47px; color: #192714; background: var(--accent);
+    border: 1px solid transparent; font-size: 15px; font-weight: 760;
+  }
+  .primary[data-running="true"] { background: #243b2e; border-color: #729384; color: var(--text); }
+  .notice { color: var(--warning); font-size: 12px; margin-top: 10px; }
+
+  .metrics {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 12px 0 0; padding: 13px 5px;
+    border: 1px solid var(--edge); border-radius: 15px; background: var(--surface);
+  }
+  .metrics > div { min-width: 0; text-align: center; }
+  .metrics > div + div { border-inline-start: 1px solid var(--edge); }
+  .metrics dt { color: var(--muted); font-size: 11px; }
+  .metrics dd { margin: 0; font-size: 23px; font-weight: 720; font-variant-numeric: tabular-nums; }
+
+  .workspace { display: grid; gap: 12px; align-items: start; margin-top: 14px; }
+  .card { min-width: 0; background: var(--surface); border: 1px solid var(--edge); border-radius: 18px; padding: 16px; }
+  .setting-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 47px; font-size: 13px; }
+  .setting-row > label:first-child { min-width: 0; }
+  .field {
+    min-height: 40px; padding: 6px 9px; border: 1px solid var(--edge); border-radius: 8px;
+    background: var(--field); color: var(--text); font-size: 13px;
+  }
+  select.field { max-width: 63%; }
+  input[type="number"].field { width: 69px; text-align: center; font-variant-numeric: tabular-nums; }
+  .unit { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+
+  fieldset { border: 0; padding: 0; margin: 7px 0 0; min-width: 0; }
+  legend { padding: 0; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+  .choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .choices.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .choice { position: relative; cursor: pointer; }
+  .choice input, .switch input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .choice span {
+    display: flex; align-items: center; justify-content: center; min-height: 42px; padding: 5px 3px;
+    color: var(--muted); font-size: 12px; white-space: nowrap;
+    background: var(--field); border: 1px solid var(--edge); border-radius: 9px;
+  }
+  .choice input:checked + span { color: var(--accent); background: #233726; border-color: #628850; font-weight: 680; }
+  .choice input:focus-visible + span, .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  details { margin-top: 13px; border-top: 1px solid var(--edge); }
+  summary {
+    min-height: 43px; display: flex; align-items: center; justify-content: space-between;
+    color: #dce9df; list-style: none; cursor: pointer; font-size: 13px; font-weight: 650;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; color: var(--muted); font-size: 18px; font-weight: 450; }
+  details[open] summary::after { content: "−"; }
+  .advanced { padding-bottom: 3px; }
+  .switch { position: relative; width: 43px; height: 30px; }
+  .switch span {
+    position: absolute; inset: 3px 0; border-radius: 14px; border: 1px solid #52665b;
+    background: #25372e; pointer-events: none;
+  }
+  .switch span::after {
+    content: ""; position: absolute; top: 3px; left: 4px; height: 16px; width: 16px;
+    border-radius: 50%; background: var(--muted); transition: transform .16s ease;
+  }
+  .switch input:checked + span { background: #426039; border-color: #81a970; }
+  .switch input:checked + span::after { background: var(--accent); transform: translateX(17px); }
+  .speed-row { margin: 5px 0 0; }
+  .speed-row label { display: flex; justify-content: space-between; color: var(--text); font-size: 13px; }
+  .speed-row output { color: var(--accent); font-weight: 720; font-variant-numeric: tabular-nums; }
+  input[type="range"] { display: block; width: 100%; min-height: 34px; margin: 3px 0 0; accent-color: var(--accent); }
+
+  .logs {
+    min-height: 148px; max-height: 248px; overflow: auto; margin: 10px 0 0; padding: 11px;
+    background: var(--field); border: 1px solid #2b3b31; border-radius: 10px;
+    color: #c8dfce; font: 12px/1.7 ui-monospace, "Roboto Mono", monospace;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .footnote { margin: 14px 1px 0; color: var(--muted); font-size: 11px; }
+
+  @media (min-width: 720px) {
+    .shell { padding-inline: 28px; }
+    .masthead { padding-block: 24px 19px; }
+    .hero { padding: 25px; }
+    .actions { grid-template-columns: 1.3fr 1fr 1fr; max-width: 645px; }
+    .primary { grid-column: auto; }
+    .workspace { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 15px; }
+    .logs { min-height: 230px; max-height: 360px; }
+  }
+  @media (max-width: 360px) {
+    .shell { padding-inline: 13px; }
+    .hero { padding-inline: 15px; }
+    .card { padding-inline: 13px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .switch span::after { transition: none; } }
 </style>
 </head>
 <body>
+<main class="shell">
+  <header class="masthead">
+    <span class="wordmark">lucky</span>
+    <span class="version" id="version" hidden></span>
+  </header>
 
-<div id="app">
-  <div class="appbar"><b>SZ 真实抢福袋</b><span style="font-size:12px;opacity:.8">v3.2.1</span><span class="lic">真实抖音 · 完全离线</span></div>
-  <div class="wrap">
-    <div class="grid">
-      <div class="card">
-        <h3>服务</h3>
-        <div class="row"><label>无障碍服务</label><b id="svcState" style="color:#888">检测中…</b></div>
-        <div class="note">本应用通过安卓无障碍服务读取<strong>抖音 / 抖音极速版</strong>前台界面的节点(福袋入口、抢福袋按钮、弹窗关闭)，并执行点击。可随时在系统设置中关闭该服务。</div>
-        <h3 style="margin-top:14px">抢福袋</h3>
-        <div class="row"><label>普通福袋</label><span class="switch"><input id="tNormal" type="checkbox" checked><span class="slider"></span></span></div>
-        <div class="row"><label>超级福袋</label><span class="switch"><input id="tSuper" type="checkbox" checked><span class="slider"></span></span></div>
-        <div class="row"><label>直播红包</label><span class="switch"><input id="tHb" type="checkbox" checked><span class="slider"></span></span></div>
-        <div class="row"><label>同一直播间抢福袋次数</label><input id="roomLimit" type="number" value="10" min="1" max="99"></div>
-        <div class="row"><label>开面板间隔(秒)</label><input id="openSec" type="number" value="60" min="10" max="600"></div>
-        <div class="row"><label>无文本入口结构识别</label><span class="switch"><input id="tStruct" type="checkbox" checked><span class="slider"></span></span></div>
-        <div class="row"><label>H5 弹窗 OCR 识别</label><span class="switch"><input id="tOcr" type="checkbox" checked><span class="slider"></span></span></div>
-      </div>
-      <div class="card">
-        <h3>点击时序(开奖前提前点击)</h3>
-        <div class="row"><label>模式</label><select id="clickMode"><option value="random">随机区间</option><option value="fixed">固定提前秒数</option></select></div>
-        <div class="row"><label>提前(秒,固定)</label><input id="fixedSec" type="number" value="5" min="1" max="60"></div>
-        <div class="row"><label>提前下限(秒)</label><input id="rMin" type="number" value="3" min="1" max="60"></div>
-        <div class="row"><label>提前上限(秒)</label><input id="rMax" type="number" value="8" min="1" max="60"></div>
-        <h3 style="margin-top:14px">目标与互动</h3>
-        <div class="row"><label>目标 App</label><select id="targetPkg"><option value="any">抖音 + 极速版</option><option value="dy">抖音</option><option value="lite">抖音极速版</option></select></div>
-        <div class="row"><label>点赞</label><span class="switch"><input id="yLike" type="checkbox" checked><span class="slider"></span></span></div>
-        <div class="row"><label>关注</label><span class="switch"><input id="yFollow" type="checkbox"><span class="slider"></span></span></div>
-        <h3 style="margin-top:14px">点击速度</h3>
-        <div class="row"><label>倍率 <span id="speedVal">1.0</span>x <span style="font-size:11px;color:#999">(影响点击前随机延迟)</span></label><input id="speed" type="range" min="0.5" max="8" step="0.5" value="1" style="flex:1"></div>
-      </div>
+  <section class="hero" aria-labelledby="title">
+    <div class="hero-header">
+      <h1 id="title">福袋控制台</h1>
+      <span class="state" id="runState" role="status">正在连接</span>
     </div>
-    <div class="card" style="margin-top:14px" id="botCard">
-      <h3>真机抢福袋(抖音 / 抖音极速版)</h3>
-      <div class="row"><label id="botStatus">检测运行环境…</label></div>
-      <div class="row" style="flex-wrap:wrap;gap:8px">
-        <button onclick="openA11ySettings()">打开无障碍设置</button>
-        <button onclick="openDouyin()" class="act">打开抖音</button>
-        <button onclick="doBotStart()" class="act">开始抢福袋</button>
-        <button onclick="doBotStop()" class="stop">停止</button>
-      </div>
-      <div class="stat" id="botStats" style="margin-top:10px"></div>
-      <div id="botLogs" class="logs" style="margin-top:10px"></div>
-      <div class="note">使用步骤: ① 开启无障碍服务 → ② 打开抖音进入有福袋的直播间 → ③ 点"开始抢福袋"后切到抖音即可;悬浮条可在抖音上层启停。</div>
-      <div class="note warn">风险提示: 自动化抢福袋可能违反抖音用户协议, 存在账号被限制/风控的风险。请在遵守平台规则的前提下自担风险使用, 仅供学习研究。</div>
+    <p class="status-detail" id="serviceState"></p>
+    <div class="actions">
+      <button type="button" class="primary" id="runButton" disabled>开始监听</button>
+      <button type="button" id="openTarget">打开抖音</button>
+      <button type="button" id="openService">无障碍设置</button>
     </div>
+    <p class="notice" id="actionNotice" role="status" hidden></p>
+  </section>
+
+  <dl class="metrics" aria-label="本次运行统计">
+    <div><dt>参与操作</dt><dd id="grabCount">0</dd></div>
+    <div><dt>领取操作</dt><dd id="popupCount">0</dd></div>
+    <div><dt>互动操作</dt><dd id="engageCount">0</dd></div>
+    <div><dt>达上限跳过</dt><dd id="skipCount">0</dd></div>
+  </dl>
+
+  <div class="workspace">
+    <section class="card" aria-labelledby="settingsTitle">
+      <h2 id="settingsTitle">监听设置</h2>
+      <form id="settings">
+        <div class="setting-row">
+          <label for="targetPkg">目标应用</label>
+          <select class="field" id="targetPkg">
+            <option value="any">抖音与极速版</option>
+            <option value="dy">抖音</option>
+            <option value="lite">抖音极速版</option>
+          </select>
+        </div>
+        <fieldset>
+          <legend>福袋类型</legend>
+          <div class="choices">
+            <label class="choice"><input id="tNormal" type="checkbox" checked><span>普通福袋</span></label>
+            <label class="choice"><input id="tSuper" type="checkbox" checked><span>超级福袋</span></label>
+            <label class="choice"><input id="tHb" type="checkbox" checked><span>直播红包</span></label>
+          </div>
+        </fieldset>
+        <details id="advanced">
+          <summary>识别与限额</summary>
+          <div class="advanced">
+            <div class="setting-row">
+              <label for="roomLimit">单直播间参与上限</label>
+              <span class="unit"><input class="field" id="roomLimit" type="number" value="10" min="1" max="99" required> 次</span>
+            </div>
+            <div class="setting-row">
+              <label for="openSec">打开面板间隔</label>
+              <span class="unit"><input class="field" id="openSec" type="number" value="60" min="10" max="600" required> 秒</span>
+            </div>
+            <div class="setting-row">
+              <label for="tStruct">识别无文字入口</label>
+              <span class="switch"><input id="tStruct" type="checkbox" role="switch" checked><span aria-hidden="true"></span></span>
+            </div>
+            <div class="setting-row">
+              <label for="tOcr">截图文字识别（OCR）</label>
+              <span class="switch"><input id="tOcr" type="checkbox" role="switch" checked><span aria-hidden="true"></span></span>
+            </div>
+            <div class="speed-row">
+              <label for="speed">点击速度 <output id="speedVal" for="speed">1.0×</output></label>
+              <input id="speed" type="range" min="0.5" max="8" step="0.5" value="1">
+            </div>
+          </div>
+        </details>
+        <details>
+          <summary>直播互动</summary>
+          <fieldset>
+            <legend>允许自动执行</legend>
+            <div class="choices two">
+              <label class="choice"><input id="yLike" type="checkbox" checked><span>点赞</span></label>
+              <label class="choice"><input id="yFollow" type="checkbox"><span>关注</span></label>
+            </div>
+          </fieldset>
+        </details>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="logsTitle">
+      <h2 id="logsTitle">运行日志</h2>
+      <pre class="logs" id="botLogs" tabindex="0" aria-label="最近运行日志">等待服务连接…</pre>
+    </section>
   </div>
 
-  <div id="floaty">
-    <div class="btns">
-      <button id="btnStart" onclick="doBotStart()">开始</button>
-      <button id="btnExit" onclick="doBotStop()">停止</button>
-    </div>
-    <div class="mini" id="miniLog"></div>
-  </div>
-</div>
-
+  <p class="footnote">自动化操作可能触发平台限制，请遵守平台规则。</p>
+</main>
 <script>
-const $ = id => document.getElementById(id);
+'use strict';
 
-// ---- 真机桥(仅 APK 内可用) ----
-const NATIVE = typeof window.YLNative !== "undefined";
-function openA11ySettings() { if (NATIVE) window.YLNative.openAccessibilitySettings(); else alert("此按钮仅在 APK 内可用"); }
-function openDouyin() { if (NATIVE) window.YLNative.openDouyin(); else alert("此按钮仅在 APK 内可用"); }
-function doBotStart() {
-  if (!NATIVE) return alert("此按钮仅在 APK 内可用");
-  window.YLNative.startBot(JSON.stringify({
-    targetPkg: $("targetPkg").value,
-    clickMode: $("clickMode").value,
-    fixedSeconds: +$("fixedSec").value,
-    randomMin: +$("rMin").value,
-    randomMax: +$("rMax").value,
-    sameRoomGrabLimit: +$("roomLimit").value,
-    openIntervalSec: +$("openSec").value,
-    grabNormal: $("tNormal").checked,
-    grabSuper: $("tSuper").checked,
-    grabHb: $("tHb").checked,
-    structDetect: $("tStruct").checked,
-    ocr: $("tOcr").checked,
-    speed: Number($("speed").value),
-    yanghao: { like: $("yLike").checked, follow: $("yFollow").checked },
-  }));
+const element = id => document.getElementById(id);
+const native = window.YLNative;
+const settings = element('settings');
+const runButton = element('runButton');
+const target = element('targetPkg');
+const logs = element('botLogs');
+let state = null;
+
+function showNotice(message = '') {
+  const notice = element('actionNotice');
+  notice.textContent = message;
+  notice.hidden = !message;
 }
-function doBotStop() { if (NATIVE) window.YLNative.stopBot(); }
 
-// 点击速度实时生效(运行中拖动立即调整)
-document.getElementById("speed").addEventListener("input", e => {
-  const v = Number(e.target.value);
-  document.getElementById("speedVal").textContent = v.toFixed(1);
-  if (NATIVE) window.YLNative.setSpeed(v);
+function readSettings() {
+  return {
+    targetPkg: target.value,
+    sameRoomGrabLimit: element('roomLimit').valueAsNumber,
+    openIntervalSec: element('openSec').valueAsNumber,
+    grabNormal: element('tNormal').checked,
+    grabSuper: element('tSuper').checked,
+    grabHb: element('tHb').checked,
+    structDetect: element('tStruct').checked,
+    ocr: element('tOcr').checked,
+    speed: element('speed').valueAsNumber,
+    yanghao: { like: element('yLike').checked, follow: element('yFollow').checked }
+  };
+}
+
+function renderState(next) {
+  state = next;
+  const badge = element('runState');
+  if (!next) {
+    badge.textContent = '未连接';
+    badge.dataset.tone = 'warning';
+    element('serviceState').textContent = native ? '暂时无法读取无障碍服务状态' : '请在 Android 应用内使用控制台';
+    runButton.disabled = true;
+    return;
+  }
+
+  const ready = next.serviceEnabled;
+  const running = next.running;
+  badge.textContent = !ready ? '需启用服务' : running ? '监听中' : '待开始';
+  badge.dataset.tone = !ready ? 'warning' : running ? 'active' : 'ready';
+  element('serviceState').textContent = !ready ? '请在系统设置中启用 lucky 无障碍服务'
+    : next.loginWall ? '请先在抖音登录' : '无障碍服务已启用';
+
+  const version = element('version');
+  version.hidden = !next.version;
+  if (!version.hidden) version.textContent = 'v' + next.version;
+  runButton.textContent = running ? '停止监听' : '开始监听';
+  runButton.dataset.running = String(running);
+  runButton.disabled = !ready && !running;
+
+  element('grabCount').textContent = next.grabs || 0;
+  element('popupCount').textContent = next.popups || 0;
+  element('engageCount').textContent = next.engaged || 0;
+  element('skipCount').textContent = next.skipped || 0;
+  const entries = (next.logs || []).filter(entry => !entry.includes('[dbg]') && !entry.includes('[ocr] 弹窗文字'));
+  const text = entries.join('\n') || '暂无运行日志';
+  if (logs.textContent !== text) {
+    const wasAtEnd = logs.scrollHeight - logs.scrollTop - logs.clientHeight < 20;
+    logs.textContent = text;
+    if (wasAtEnd) logs.scrollTop = logs.scrollHeight;
+  }
+}
+
+function refresh() {
+  try {
+    const next = native ? JSON.parse(native.botState()) : null;
+    renderState(next && !next.error ? next : null);
+  } catch (error) {
+    renderState(null);
+  }
+}
+
+settings.addEventListener('submit', event => event.preventDefault());
+runButton.addEventListener('click', () => {
+  if (!state) return;
+  showNotice();
+  if (state.running) {
+    native.stopBot();
+  } else {
+    if (!settings.checkValidity()) {
+      element('advanced').open = true;
+      settings.reportValidity();
+      return;
+    }
+    native.startBot(JSON.stringify(readSettings()));
+  }
+  refresh();
+});
+element('openService').addEventListener('click', () => native.openAccessibilitySettings());
+element('openTarget').addEventListener('click', () => {
+  showNotice(native.openDouyin(target.value) ? '' : '手机上未找到所选的抖音应用。');
+});
+target.addEventListener('change', () => {
+  element('openTarget').textContent = target.value === 'lite' ? '打开抖音极速版' : '打开抖音';
+  showNotice();
+});
+element('speed').addEventListener('input', event => {
+  const speed = event.target.valueAsNumber;
+  element('speedVal').textContent = speed.toFixed(1) + '×';
+  if (native) native.setSpeed(speed);
 });
 
-function describeFg(pkg) {
-  if (!pkg) return "未知";
-  if (pkg === "com.ss.android.ugc.aweme") return "抖音";
-  if (pkg === "com.ss.android.ugc.aweme.lite") return "抖音极速版";
-  if (pkg.indexOf("com.yllite.app") === 0) return "本应用";
-  return "其他(" + pkg + ")";
-}
-
-// ---- 界面轮询(直读真机桥状态) ----
-function poll() {
-  if (!NATIVE) { $("botStatus").textContent = "未检测到原生桥(请在 APK 内运行)"; $("svcState").textContent = "—"; return; }
-  try {
-    const b = JSON.parse(window.YLNative.botState());
-    $("svcState").textContent = b.serviceEnabled ? "已启用" : "未启用";
-    $("svcState").style.color = b.serviceEnabled ? "#0a0" : "#b00";
-    const fg = describeFg(b.fgPkg || "");
-    const roomShort = (b.room || "").split(".").pop() || "";
-    $("botStatus").textContent = "无障碍服务:" + (b.serviceEnabled ? "已启用" : "未启用")
-      + " · 前台:" + fg
-      + (roomShort ? " · 界面:" + roomShort : "")
-      + (b.loginWall ? " · ⚠抖音未登录" : "")
-      + " · 监听:" + (b.running ? "运行中" : "停止");
-    $("botStatus").style.color = b.loginWall ? "#b00" : "";
-    $("botStats").innerHTML = [
-      ["抢福袋", b.grabs], ["弹窗关闭", b.popups], ["商品逃逸", b.escaped],
-      ["互动", b.engaged], ["上限跳过", b.skipped],
-    ].map(([k, v]) => `<div class="s"><b>${v}</b><span>${k}</span></div>`).join("");
-    const logs = (b.logs || []);
-    $("botLogs").textContent = logs.join("\n");
-    $("botLogs").scrollTop = $("botLogs").scrollHeight;
-    $("miniLog").textContent = logs.slice(-2).join("\n");
-    $("btnStart").textContent = b.running ? "进行中…" : "开始";
-  } catch (e) { }
-}
-setInterval(poll, 1000);
-poll();
-
-// ---- 悬浮条拖动 ----
-(function () {
-  const f = $("floaty"); let drag = null;
-  f.addEventListener("mousedown", e => {
-    if (e.target.tagName === "BUTTON") return;
-    drag = { dx: e.clientX - f.offsetLeft, dy: e.clientY - f.offsetTop };
-    f.style.right = "auto"; f.style.bottom = "auto";
-  });
-  document.addEventListener("mousemove", e => {
-    if (!drag) return;
-    f.style.left = Math.max(0, e.clientX - drag.dx) + "px";
-    f.style.top = Math.max(0, e.clientY - drag.dy) + "px";
-  });
-  document.addEventListener("mouseup", () => drag = null);
-  f.addEventListener("touchstart", e => {
-    if (e.target.tagName === "BUTTON") return;
-    const t0 = e.touches[0];
-    const r = f.getBoundingClientRect();
-    drag = { dx: t0.clientX - r.left, dy: t0.clientY - r.top };
-    f.style.right = "auto"; f.style.bottom = "auto";
-  }, { passive: true });
-  document.addEventListener("touchmove", e => {
-    if (!drag) return;
-    const t0 = e.touches[0];
-    f.style.left = Math.max(0, t0.clientX - drag.dx) + "px";
-    f.style.top = Math.max(0, t0.clientY - drag.dy) + "px";
-  }, { passive: true });
-  document.addEventListener("touchend", () => drag = null);
-})();
+element('openTarget').disabled = !native;
+element('openService').disabled = !native;
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+refresh();
+if (native) setInterval(() => { if (!document.hidden) refresh(); }, 1000);
 </script>
 </body>
 </html>
