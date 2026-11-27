@@ -25,6 +25,7 @@ public final class BotCore {
         public boolean structDetect = true;   // 无文本福袋入口的结构识别兜底
         public int openIntervalSec = 60;      // 同一房间两次自动点开福袋面板的最小间隔(秒), 防频繁查看触发风控
         public boolean ocrEnabled = true;     // H5/自绘弹窗的 OCR 识别与点击(API 30+)
+        public String shareRecipient = "";   // 仅用于团购福袋的分享任务，空值关闭
         public boolean likeEnabled = true;
         public boolean followEnabled = false;
         public volatile double speed = 1.0; // 点击人类化延迟倍率(运行中可实时调整)

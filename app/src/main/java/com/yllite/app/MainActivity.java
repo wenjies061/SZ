@@ -2,6 +2,7 @@ package com.yllite.app;
 
 import android.app.Activity;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
@@ -20,6 +21,8 @@ import org.json.JSONObject;
  * - JS 桥(YLNative): 无障碍开关检测 / 打开抖音 / 启停真机监听(直接作用于真实抖音界面)
  */
 public class MainActivity extends Activity {
+    private static final String TASK_PREFS = "live_tasks";
+    private static final String SHARE_RECIPIENT = "share_recipient";
 
     private WebView webView;
     private String versionName = "";
@@ -43,6 +46,16 @@ public class MainActivity extends Activity {
     }
 
     class Bridge {
+
+        @JavascriptInterface
+        public String getShareRecipient() {
+            return getSharedPreferences(TASK_PREFS, MODE_PRIVATE).getString(SHARE_RECIPIENT, "");
+        }
+
+        @JavascriptInterface
+        public void saveShareRecipient(String name) {
+            storeShareRecipient(MainActivity.this, name);
+        }
 
         @JavascriptInterface
         public boolean isServiceEnabled() {
@@ -93,10 +106,12 @@ public class MainActivity extends Activity {
                 c.structDetect = j.optBoolean("structDetect", true);
                 c.openIntervalSec = Math.max(10, Math.min(600, j.optInt("openIntervalSec", 60)));
                 c.ocrEnabled = j.optBoolean("ocr", true);
+                c.shareRecipient = validRecipient(j.optString("shareRecipient"));
                 c.speed = j.optDouble("speed", 1.0);
                 JSONObject y = j.optJSONObject("yanghao");
                 if (y != null) { c.likeEnabled = y.optBoolean("like", true); c.followEnabled = y.optBoolean("follow", false); }
             } catch (Exception ignored) { }
+            saveShareRecipient(c.shareRecipient);
             bot.configure(c);
             bot.resetStats();
             bot.setRunning(true);
@@ -141,6 +156,17 @@ public class MainActivity extends Activity {
                 return "{\"running\":false,\"error\":\"" + e.getMessage() + "\"}";
             }
         }
+    }
+
+    private static String validRecipient(String name) {
+        String recipient = DouyinShareSheet.normalizeRecipient(name);
+        return recipient.length() <= 64 ? recipient : "";
+    }
+
+    static String storeShareRecipient(Context context, String name) {
+        String recipient = validRecipient(name);
+        context.getSharedPreferences(TASK_PREFS, MODE_PRIVATE).edit().putString(SHARE_RECIPIENT, recipient).apply();
+        return recipient;
     }
 
     private static String describeTarget(String t) {

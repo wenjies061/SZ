@@ -88,6 +88,8 @@
   }
   select.field { max-width: 63%; }
   input[type="number"].field { width: 69px; text-align: center; font-variant-numeric: tabular-nums; }
+  .task-recipient { display: block; width: 100%; margin: 6px 0; }
+  .task-hint { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
   .unit { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
 
   fieldset { border: 0; padding: 0; margin: 7px 0 0; min-width: 0; }
@@ -227,6 +229,13 @@
             </div>
           </div>
         </details>
+        <details id="shareSettings">
+          <summary>福袋分享</summary>
+          <label for="shareRecipient">团购福袋分享联系人</label>
+          <input class="field task-recipient" id="shareRecipient" type="text" maxlength="64"
+            autocomplete="off" spellcheck="false" placeholder="抖音昵称" aria-describedby="shareHelp">
+          <p class="task-hint" id="shareHelp">填写分享面板里显示的昵称。留空关闭，下次开始监听时生效。</p>
+        </details>
         <details>
           <summary>直播互动</summary>
           <fieldset>
@@ -256,6 +265,7 @@ const native = window.YLNative;
 const settings = element('settings');
 const runButton = element('runButton');
 const target = element('targetPkg');
+const shareRecipient = element('shareRecipient');
 const logs = element('botLogs');
 let state = null;
 
@@ -275,6 +285,7 @@ function readSettings() {
     grabHb: element('tHb').checked,
     structDetect: element('tStruct').checked,
     ocr: element('tOcr').checked,
+    shareRecipient: shareRecipient.value.trim(),
     speed: element('speed').valueAsNumber,
     yanghao: { like: element('yLike').checked, follow: element('yFollow').checked }
   };
@@ -328,6 +339,11 @@ function refresh() {
 }
 
 settings.addEventListener('submit', event => event.preventDefault());
+if (native) {
+  shareRecipient.value = native.getShareRecipient();
+  if (shareRecipient.value) element('shareSettings').open = true;
+  shareRecipient.addEventListener('change', () => native.saveShareRecipient(shareRecipient.value.trim()));
+}
 runButton.addEventListener('click', () => {
   if (!state) return;
   showNotice();

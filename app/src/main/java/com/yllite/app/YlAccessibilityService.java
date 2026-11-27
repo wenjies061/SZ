@@ -7,6 +7,7 @@ import android.os.SystemClock;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
+import java.util.EnumSet;
 import java.util.List;
 
 /**
@@ -215,6 +216,9 @@ public class YlAccessibilityService extends AccessibilityService {
                 String a = i.getAction() == null ? "" : i.getAction();
                 switch (a) {
                     case "com.yllite.app.START":
+                        if (i.hasExtra("share_recipient")) {
+                            bot.cfg.shareRecipient = MainActivity.storeShareRecipient(ctx, i.getStringExtra("share_recipient"));
+                        }
                         bot.setRunning(true);
                         navigationCheckSession = i.getBooleanExtra("navigation_only", false) ? bot.runSession() : -1;
                         bot.log(navigationCheckSession == -1 ? "[bot] adb: 启动真机模式" : "[bot] adb: 仅验证直播间导航");
@@ -255,6 +259,8 @@ public class YlAccessibilityService extends AccessibilityService {
         List<AccessibilityNodeInfo> roots = targetRoots(bot);
         if (roots.isEmpty()) return;
         AccessibilityNodeInfo top = roots.get(0);
+        if (handleMonthlyPaymentCoupon(bot, top, session)) return;
+        if (handleGroupShare(bot, top, session)) return;
         if (handleWatchHistory(bot, top, session, now)) return;
 
         String room0 = (currentHost != null && !currentHost.isEmpty()) ? currentHost : currentRoom;
@@ -405,7 +411,7 @@ public class YlAccessibilityService extends AccessibilityService {
                 }
                 // 发送按钮: 需在面板上下文/自动发送窗口内才处理(避免误发普通评论)
                 // 只取屏幕下半区且边界有效的节点(上半区的同名节点是多窗口重影)
-                if (lv.equals("发送") && sendNode == null) {
+                if (lv.equals("发送") && sendNode == null && (viewId == null || !viewId.endsWith(":id/l-c"))) {
                     android.graphics.Rect sr = new android.graphics.Rect();
                     n.getBoundsInScreen(sr);
                     if (sr.width() > 0 && sr.height() > 0 && sr.centerY() > scrH * 0.55f) sendNode = n;
@@ -511,7 +517,7 @@ public class YlAccessibilityService extends AccessibilityService {
                     // 精确匹配按钮文案: 评论区事件("xxx分享了直播")等长文本不算互动按钮
                     boolean isLike = what.equals("点赞") || what.equals("小心心");
                     boolean isFollow = what.equals("关注");
-                    if (!isLike && !isFollow && !what.equals("收藏") && !what.equals("分享")) break;
+                    if (!isLike && !isFollow && !what.equals("收藏")) break;
                     boolean enabled = isLike ? bot.cfg.likeEnabled : isFollow ? bot.cfg.followEnabled : true;
                     if (!enabled) break;
                     if (!bot.canAct("engage:" + what, 6000)) break;
@@ -686,6 +692,59 @@ public class YlAccessibilityService extends AccessibilityService {
                 && box.top >= screen.top + screen.height() * .16f && box.top <= screen.top + screen.height() * .67f;
     }
 
+    private boolean handleMonthlyPaymentCoupon(BotCore bot, AccessibilityNodeInfo root, long session) {
+        String backdropId = root.getPackageName() + ":id/bgm";
+        List<AccessibilityNodeInfo> backdrops = root.findAccessibilityNodeInfosByViewId(backdropId);
+        if (backdrops.isEmpty()) return false;
+
+        Rect screen = new Rect();
+        root.getBoundsInScreen(screen);
+        if (screen.isEmpty()) return false;
+        for (AccessibilityNodeInfo backdrop : backdrops) {
+            if (!isBackdrop(backdrop, screen)) continue;
+            AccessibilityNodeInfo overlay = backdrop.getParent();
+            if (overlay == null) continue;
+            AccessibilityNodeInfo page = findMonthlyPaymentPage(overlay, screen);
+            if (page == null) continue;
+
+            int window = root.getWindowId();
+            if (bot.runSession() != session || !isTargetActive(bot, window)) return false;
+            if (backdrop.refresh() && isBackdrop(backdrop, screen)
+                    && page.refresh() && isMonthlyPaymentPage(page, screen)
+                    && bot.canAct("couponback:" + window, 8000) && performGlobalAction(GLOBAL_ACTION_BACK)) {
+                bot.log("[room] 已识别抖音月付领券弹层，执行返回直播间");
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static AccessibilityNodeInfo findMonthlyPaymentPage(AccessibilityNodeInfo overlay, Rect screen) {
+        java.util.ArrayDeque<AccessibilityNodeInfo> queue = new java.util.ArrayDeque<>();
+        queue.add(overlay);
+        int visited = 0;
+        while (!queue.isEmpty() && visited++ < 64) {
+            AccessibilityNodeInfo node = queue.removeFirst();
+            if (isMonthlyPaymentPage(node, screen)) return node;
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) queue.add(child);
+            }
+        }
+        return null;
+    }
+
+    private static boolean isMonthlyPaymentPage(AccessibilityNodeInfo node, Rect screen) {
+        CharSequence type = node.getClassName();
+        CharSequence title = node.getText();
+        if (!node.isVisibleToUser() || type == null || !"android.webkit.WebView".contentEquals(type)
+                || title == null || !"抖音月付".contentEquals(title)) return false;
+        Rect box = new Rect();
+        node.getBoundsInScreen(box);
+        return box.width() >= screen.width() * .85f && box.height() >= screen.height() * .35f
+                && box.top >= screen.top + screen.height() * .15f && box.bottom >= screen.bottom - screen.height() * .1f;
+    }
+
     private static boolean isBackdrop(AccessibilityNodeInfo node, Rect screen) {
         CharSequence label = node.getContentDescription();
         if (!node.isVisibleToUser() || !node.isClickable() || label == null || !"关闭".contentEquals(label)) return false;
@@ -698,9 +757,105 @@ public class YlAccessibilityService extends AccessibilityService {
     private volatile long lastGroupPanelSeenTs;
     private String groupRoundRoom = "";
     private long groupRoundDeadlineTs;
-    private GroupBuyPanel.Stage groupAction = GroupBuyPanel.Stage.UNKNOWN;
+    private final EnumSet<GroupBuyPanel.Stage> groupActions = EnumSet.noneOf(GroupBuyPanel.Stage.class);
     private GroupBuyPanel.Stage groupLastStage = GroupBuyPanel.Stage.UNKNOWN;
     private boolean groupConfirmed;
+    private volatile GroupShareAttempt groupShare;
+    private volatile GroupShareAttempt lastShareSubmission;
+
+    private static final class GroupShareAttempt {
+        final long session;
+        final long drawDeadline;
+        final String room;
+        final String pkg;
+        final String recipient;
+        volatile long expiresAt;
+        volatile boolean submitted;
+        int selectionAttempts;
+        boolean sawSheet;
+        int sheetWindow = -1;
+        long nextProbe;
+
+        GroupShareAttempt(long session, long drawDeadline, String room, String pkg, String recipient, long now) {
+            this.session = session;
+            this.drawDeadline = drawDeadline;
+            this.room = room;
+            this.pkg = pkg;
+            this.recipient = recipient;
+            expiresAt = Math.min(drawDeadline, now + 12000);
+            nextProbe = now + 250;
+        }
+    }
+
+    private boolean handleGroupShare(BotCore bot, AccessibilityNodeInfo root, long session) {
+        GroupShareAttempt attempt = groupShare;
+        if (attempt == null) return false;
+        long now = System.currentTimeMillis();
+        if (session != attempt.session || !attempt.recipient.equals(bot.cfg.shareRecipient) || now >= attempt.expiresAt) {
+            if (groupShare == attempt) groupShare = null;
+            if (session == attempt.session && now >= attempt.expiresAt) {
+                bot.log(attempt.submitted ? "[share] 等待抖音确认分享任务超时"
+                        : "[share] 未能在分享面板确认唯一收件人和发送按钮");
+            }
+            return false;
+        }
+        int window = root.getWindowId();
+        CharSequence pkg = root.getPackageName();
+        if (pkg == null || !attempt.pkg.contentEquals(pkg) || !isTargetActive(bot, window) || now < attempt.nextProbe) {
+            return true;
+        }
+        attempt.nextProbe = now + 450;
+        if (attempt.submitted) {
+            maybeOcrH5Dialog(attempt.room, false, false, window, 0);
+            return true;
+        }
+        DouyinShareSheet sheet = DouyinShareSheet.read(root, attempt.pkg, attempt.recipient);
+        if (sheet == null) {
+            if (attempt.sawSheet && groupShare == attempt) {
+                groupShare = null;
+                bot.log("[share] 分享面板已关闭，本轮发送状态未确认");
+            }
+            return true;
+        }
+        attempt.sawSheet = true;
+        if (!sheet.hasSelection() && attempt.selectionAttempts < 2
+                && (attempt.sheetWindow < 0 || window == attempt.sheetWindow)) {
+            AccessibilityNodeInfo avatar = sheet.selectionAvatar();
+            if (avatar != null && isTargetActive(bot, window)) {
+                attempt.selectionAttempts++;
+                attempt.sheetWindow = window;
+                attempt.nextProbe = now + 1100;
+                if (avatar.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    bot.log("[share] 已找到指定联系人，等待抖音确认选中");
+                } else {
+                    Rect bounds = new Rect();
+                    avatar.getBoundsInScreen(bounds);
+                    if (!bounds.isEmpty() && isTargetActive(bot, window)) {
+                        gestureTap(bounds.centerX(), bounds.centerY());
+                    }
+                }
+            }
+            return true;
+        }
+        if (attempt.selectionAttempts == 0 && sheet.hasSelection() && groupShare == attempt) {
+            groupShare = null;
+            bot.log("[share] 分享面板已有选中项，已暂停自动分享");
+            return true;
+        }
+        AccessibilityNodeInfo send = sheet.verifiedSend();
+        if (attempt.selectionAttempts > 0 && window == attempt.sheetWindow && send != null && groupShare == attempt
+                && bot.runSession() == attempt.session && isTargetActive(bot, window)) {
+            attempt.submitted = true;
+            lastShareSubmission = attempt;
+            attempt.expiresAt = Math.min(attempt.drawDeadline + 1500, now + 12000);
+            if (send.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                bot.log("[share] 已点击发送，等待抖音确认福袋任务");
+            } else {
+                bot.log("[share] 发送操作状态未确认，请查看抖音分享面板");
+            }
+        }
+        return true;
+    }
 
     private boolean groupPanelPending(long now) {
         return now < groupEntryPendingUntilTs || (lastGroupPanelSeenTs > 0 && now - lastGroupPanelSeenTs < 4500);
@@ -733,7 +888,7 @@ public class YlAccessibilityService extends AccessibilityService {
         return pkg != null && BotCore.isTargetPackage(pkg.toString(), bot.cfg);
     }
 
-    private void handleGroupBuyPanel(BotCore bot, GroupBuyPanel panel, String room, long now) {
+    private void handleGroupBuyPanel(BotCore bot, GroupBuyPanel panel, String room, long now, int window, long session) {
         lastGroupPanelSeenTs = now;
         groupEntryPendingUntilTs = 0;
         if (!bot.cfg.grabNormal) return;
@@ -741,10 +896,20 @@ public class YlAccessibilityService extends AccessibilityService {
         long deadline = panel.drawSeconds > 0 ? now + panel.drawSeconds * 1000 : 0;
         boolean sameRound = room.equals(groupRoundRoom) && now < groupRoundDeadlineTs + 6000
                 && (deadline == 0 || Math.abs(deadline - groupRoundDeadlineTs) < 15000);
+        GroupShareAttempt attempt = groupShare;
+        if (attempt != null && attempt.submitted) {
+            if (!sameRound || !attempt.room.equals(room)) return;
+            if (panel.shareAchieved || panel.stage == GroupBuyPanel.Stage.PARTICIPATED) {
+                groupShare = null;
+                bot.log("[share] 抖音已确认分享任务达成");
+            } else {
+                return;
+            }
+        }
         if (!sameRound && deadline > 0) {
             groupRoundRoom = room;
             groupRoundDeadlineTs = deadline;
-            groupAction = GroupBuyPanel.Stage.UNKNOWN;
+            groupActions.clear();
             groupLastStage = GroupBuyPanel.Stage.UNKNOWN;
             groupConfirmed = false;
         }
@@ -754,23 +919,47 @@ public class YlAccessibilityService extends AccessibilityService {
                 case COMMENT: bot.log("[ocr] 团购福袋面板已确认，待发送任务评论"); break;
                 case START_WATCH: bot.log("[ocr] 团购福袋评论任务完成，待开始观看直播任务"); break;
                 case WATCHING: bot.log("[ocr] 团购福袋观看任务进行中，请留在当前直播间"); break;
+                case SHARE: bot.log("[ocr] 团购福袋需要分享直播间"); break;
                 case PARTICIPATED: bot.log("[ocr] 团购福袋已参与抽奖，等待开奖"); break;
                 default: break;
             }
         }
         if (panel.stage == GroupBuyPanel.Stage.PARTICIPATED) {
             if (room.equals(groupRoundRoom)) {
-                if (!groupConfirmed && groupAction != GroupBuyPanel.Stage.UNKNOWN) bot.recordConfirmedGrab(room);
+                if (!groupConfirmed && !groupActions.isEmpty()) bot.recordConfirmedGrab(room);
                 groupConfirmed = true;
             }
             return;
         }
-        if ((panel.stage != GroupBuyPanel.Stage.COMMENT && panel.stage != GroupBuyPanel.Stage.START_WATCH)
+        if ((panel.stage != GroupBuyPanel.Stage.COMMENT && panel.stage != GroupBuyPanel.Stage.START_WATCH
+                && panel.stage != GroupBuyPanel.Stage.SHARE)
                 || groupConfirmed || groupRoundDeadlineTs <= now || !room.equals(groupRoundRoom)
-                || panel.stage.ordinal() <= groupAction.ordinal()
-                || bot.grabCountOf(room) >= bot.cfg.sameRoomGrabLimit || !isTargetActive(bot, -1)) return;
+                || groupActions.contains(panel.stage)
+                || bot.grabCountOf(room) >= bot.cfg.sameRoomGrabLimit || !isTargetActive(bot, window)) return;
+        if (panel.requiresShare && !panel.shareAchieved && bot.cfg.shareRecipient.isEmpty()) {
+            if (bot.canAct("share-config:" + room, 10000)) {
+                bot.log("[share] 此福袋需要分享，请先在 lucky 填写团购福袋分享联系人");
+            }
+            return;
+        }
+        if (panel.stage == GroupBuyPanel.Stage.SHARE) {
+            GroupShareAttempt previousShare = lastShareSubmission;
+            if (panel.shareAchieved || groupShare != null || (previousShare != null
+                    && previousShare.room.equals(room) && now < previousShare.drawDeadline + 1500)) return;
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null || root.getWindowId() != window || root.getPackageName() == null) return;
+            String pkg = root.getPackageName().toString();
+            groupShare = new GroupShareAttempt(session, groupRoundDeadlineTs, room, pkg, bot.cfg.shareRecipient, now);
+            if (gestureTap(panel.button.centerX(), panel.button.centerY())) {
+                groupActions.add(panel.stage);
+                bot.log("[share] 已点击福袋里的「分享直播间 参与抽奖」");
+            } else {
+                groupShare = null;
+            }
+            return;
+        }
         if (gestureTap(panel.button.centerX(), panel.button.centerY())) {
-            groupAction = panel.stage;
+            groupActions.add(panel.stage);
             bot.log("[ocr] 团购福袋已触摸按钮，等待任务状态更新");
         }
     }
@@ -960,11 +1149,11 @@ public class YlAccessibilityService extends AccessibilityService {
                 GroupBuyPanel group = GroupBuyPanel.read(items, bw0, bh0);
                 if (group != null) {
                     if (isTargetActive(bot, -1)) {
-                        handleGroupBuyPanel(bot, group, currentHost.isEmpty() ? room : currentHost, now);
+                        handleGroupBuyPanel(bot, group, currentHost.isEmpty() ? room : currentHost, now, window, session);
                     }
                     return;
                 }
-                if (groupPanelPending(now)) return;
+                if (groupShare != null || groupPanelPending(now)) return;
                 StringBuilder dbg = new StringBuilder();
                 String tapText = null;
                 android.graphics.Rect tapBox = null;
